@@ -25,7 +25,7 @@ export default function Labels({ parts, visible, layer }) {
                         style={{
                             left: `${part.x}%`,
                             top: `${part.y}%`,
-                            animationDelay: `${i * 280}ms`,
+                            animationDelay: `${Math.min(i * 90, 900)}ms`,
                         }}
                         onClick={() => handleTap(i)}
                     >

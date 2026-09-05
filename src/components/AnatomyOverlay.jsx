@@ -49,7 +49,7 @@ export default function AnatomyOverlay({ parts, layer, visible }) {
                         filter="url(#anatomy-glow)"
                         className="anatomy-shape"
                         style={{
-                            animationDelay: `${i * 200}ms`,
+                            animationDelay: `${Math.min(i * 70, 700)}ms`,
                             cursor: 'pointer',
                         }}
                         onMouseEnter={() => setHoveredIndex(i)}

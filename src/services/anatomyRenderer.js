@@ -1,129 +1,2851 @@
-import { HAND, POSE, FACE } from '../services/handTracker';
+import { FACE, HAND, POSE } from './handLandmarks.js';
+import { ANATOMY_MODES, createHandSkeletonModel, getLabelsForMode } from './handModel.js';
+import { createFaceMuscleModel } from './faceMuscleModel.js';
 
 // ═══════════════════════════════════════
 //   HAND ANATOMY RENDERERS
 // ═══════════════════════════════════════
 
-export function drawHandMuscles(ctx, landmarks, w, h) {
+const MEDICAL_MUSCLE_COLORS = {
+    thenarLight: '#e18f84',
+    thenarMid: '#b14f4d',
+    thenarDark: '#672e34',
+    deepLight: '#d07b72',
+    deepMid: '#98433f',
+    deepDark: '#572831',
+    hypothenarLight: '#ce7f78',
+    hypothenarMid: '#964247',
+    hypothenarDark: '#55262f',
+    interossei: '#a24b49',
+};
+
+export function drawHandMuscles(ctx, landmarks, w, h, options = {}) {
     const p = (i) => ({ x: landmarks[i].x * w, y: landmarks[i].y * h });
+    const wrist = p(HAND.WRIST);
+    const thumbCmc = p(HAND.THUMB_CMC);
+    const thumbMcp = p(HAND.THUMB_MCP);
+    const thumbIp = p(HAND.THUMB_IP);
+    const thumbTip = p(HAND.THUMB_TIP);
+    const indexMcp = p(HAND.INDEX_MCP);
+    const middleMcp = p(HAND.MIDDLE_MCP);
+    const ringMcp = p(HAND.RING_MCP);
+    const pinkyMcp = p(HAND.PINKY_MCP);
+    const indexPip = p(HAND.INDEX_PIP);
+    const middlePip = p(HAND.MIDDLE_PIP);
+    const ringPip = p(HAND.RING_PIP);
+    const pinkyPip = p(HAND.PINKY_PIP);
+    const palmWidth = Math.max(24, dist(indexMcp, pinkyMcp));
+    const palmLength = Math.max(32, dist(wrist, middleMcp));
+    const scale = clamp((palmWidth + palmLength) / 210, 0.65, 1.55);
+    const labelMode = options.labelMode || 'clean';
+    const bounds = options.visibleBounds || {
+        left: 18,
+        top: 18,
+        right: w - 18,
+        bottom: h - 18,
+    };
+    const anatomy = {
+        wrist,
+        thumbCmc,
+        thumbMcp,
+        thumbIp,
+        thumbTip,
+        indexMcp,
+        middleMcp,
+        ringMcp,
+        pinkyMcp,
+        fingerMcps: [indexMcp, middleMcp, ringMcp, pinkyMcp],
+        fingerPips: [indexPip, middlePip, ringPip, pinkyPip],
+        fingerDips: [p(HAND.INDEX_DIP), p(HAND.MIDDLE_DIP), p(HAND.RING_DIP), p(HAND.PINKY_DIP)],
+        fingerTips: [p(HAND.INDEX_TIP), p(HAND.MIDDLE_TIP), p(HAND.RING_TIP), p(HAND.PINKY_TIP)],
+        palmWidth,
+        palmLength,
+        scale,
+        labelMode,
+        bounds,
+    };
 
-    // ── Thenar eminence (large muscle pad at thumb base) ──
-    ctx.globalAlpha = 0.7;
-    drawMuscleBelly(ctx, p(HAND.WRIST), p(HAND.THUMB_MCP),
-        [p(HAND.THUMB_CMC), p(HAND.INDEX_MCP)], '#c42030', '#8b1520', 18);
-
-    // ── Hypothenar (pinky-side muscle pad) ──
-    drawMuscleBelly(ctx, p(HAND.WRIST), p(HAND.PINKY_MCP),
-        [mid(p(HAND.WRIST), p(HAND.RING_MCP))], '#b82838', '#7a1a25', 14);
-
-    // ── Interosseous muscles (4 between metacarpals) ──
-    ctx.globalAlpha = 0.65;
-    const mcps = [HAND.INDEX_MCP, HAND.MIDDLE_MCP, HAND.RING_MCP, HAND.PINKY_MCP];
-    for (let i = 0; i < mcps.length - 1; i++) {
-        const a = mid(p(HAND.WRIST), p(mcps[i]));
-        const b = mid(p(mcps[i]), p(mcps[i + 1]));
-        drawMuscleBundle(ctx, a, b, '#a52535', 8, 5);
-    }
-
-    // ── Finger flexor muscles (along each finger) ──
-    ctx.globalAlpha = 0.6;
-    const fingers = [
-        [HAND.INDEX_MCP, HAND.INDEX_PIP, HAND.INDEX_DIP],
-        [HAND.MIDDLE_MCP, HAND.MIDDLE_PIP, HAND.MIDDLE_DIP],
-        [HAND.RING_MCP, HAND.RING_PIP, HAND.RING_DIP],
-        [HAND.PINKY_MCP, HAND.PINKY_PIP, HAND.PINKY_DIP],
-    ];
-    fingers.forEach(seg => {
-        drawMuscleBundle(ctx, p(seg[0]), p(seg[1]), '#c03040', 6, 4);
-        drawMuscleBundle(ctx, p(seg[1]), p(seg[2]), '#b82838', 5, 3);
-    });
-    // Thumb muscles
-    drawMuscleBundle(ctx, p(HAND.THUMB_CMC), p(HAND.THUMB_MCP), '#c03040', 7, 5);
-    drawMuscleBundle(ctx, p(HAND.THUMB_MCP), p(HAND.THUMB_IP), '#b82838', 6, 4);
-
-    // ── Tendons (white/pink lines running to fingertips) ──
-    ctx.globalAlpha = 0.7;
-    [[HAND.INDEX_MCP, HAND.INDEX_PIP, HAND.INDEX_DIP, HAND.INDEX_TIP],
-    [HAND.MIDDLE_MCP, HAND.MIDDLE_PIP, HAND.MIDDLE_DIP, HAND.MIDDLE_TIP],
-    [HAND.RING_MCP, HAND.RING_PIP, HAND.RING_DIP, HAND.RING_TIP],
-    [HAND.PINKY_MCP, HAND.PINKY_PIP, HAND.PINKY_DIP, HAND.PINKY_TIP],
-    [HAND.THUMB_CMC, HAND.THUMB_MCP, HAND.THUMB_IP, HAND.THUMB_TIP],
-    ].forEach(f => drawTendonLine(ctx, f.map(i => p(i))));
-
-    // ── Flexor retinaculum (wrist band) ──
-    ctx.globalAlpha = 0.5;
-    const wl = p(HAND.WRIST);
-    const wristWidth = dist(p(HAND.INDEX_MCP), p(HAND.PINKY_MCP)) * 0.5;
-    drawMuscleBand(ctx, wl, wristWidth);
-
-    ctx.globalAlpha = 1;
-    drawLabel(ctx, 'Thenar Eminence', mid(p(HAND.THUMB_CMC), p(HAND.INDEX_MCP)), '#ff6680');
-    drawLabel(ctx, 'Hypothenar', mid(p(HAND.WRIST), p(HAND.PINKY_MCP)), '#ff6680');
-    drawLabel(ctx, 'Dorsal Interossei', mid(p(HAND.MIDDLE_MCP), mid(p(HAND.RING_MCP), p(HAND.WRIST))), '#ff6680');
-    drawLabel(ctx, 'Flexor Tendons', mid(p(HAND.MIDDLE_PIP), p(HAND.MIDDLE_DIP)), '#ff6680');
-    drawLabel(ctx, 'Retinaculum', wl, '#ff6680');
+    return options.side === 'back'
+        ? drawBackSideMuscles(ctx, anatomy)
+        : drawPalmSideMuscles(ctx, anatomy);
 }
 
-export function drawHandSkeleton(ctx, landmarks, w, h) {
+function drawPalmSideMuscles(ctx, anatomy) {
+    const {
+        wrist,
+        thumbCmc,
+        thumbMcp,
+        thumbIp,
+        thumbTip,
+        indexMcp,
+        middleMcp,
+        ringMcp,
+        pinkyMcp,
+        fingerMcps,
+        fingerPips,
+        fingerDips,
+        fingerTips,
+        palmWidth,
+        palmLength,
+        scale,
+        labelMode,
+        bounds,
+    } = anatomy;
+
+    ctx.save();
+    const thenarLabel = drawSimplifiedThenarMuscleMass(ctx, {
+        wrist,
+        thumbCmc,
+        thumbMcp,
+        thumbIp,
+        indexMcp,
+        palmWidth,
+        palmLength,
+        scale,
+    });
+    const hypothenarLabel = drawSimplifiedHypothenarMuscleMass(ctx, {
+        wrist,
+        middleMcp,
+        ringMcp,
+        pinkyMcp,
+        palmWidth,
+        scale,
+    });
+    const interosseiLabel = drawSimplifiedPalmarInterossei(ctx, {
+        wrist,
+        fingerMcps,
+        palmWidth,
+        scale,
+    });
+    const lumbricalLabel = drawSimplifiedLumbricals(ctx, {
+        wrist,
+        thumbCmc,
+        fingerMcps,
+        fingerPips,
+        palmWidth,
+        scale,
+    });
+    const tendonLabels = drawCleanFlexorTendonLayer(ctx, {
+        wrist,
+        thumbCmc,
+        thumbMcp,
+        thumbIp,
+        thumbTip,
+        fingerMcps,
+        fingerPips,
+        fingerDips,
+        fingerTips,
+        palmWidth,
+        palmLength,
+        scale,
+    });
+
+    const labels = labelMode === 'detailed'
+        ? [
+            { text: 'Flexor tendon paths', point: tendonLabels.groupPoint, priority: 1 },
+            { text: 'Thenar muscles', point: thenarLabel, priority: 2, preferredSide: 1 },
+            { text: 'Hypothenar muscles', point: hypothenarLabel, priority: 3, preferredSide: -1 },
+            { text: 'Lumbricals', point: lumbricalLabel, priority: 4 },
+            { text: 'Palmar interossei', point: interosseiLabel, priority: 5 },
+            ...tendonLabels.detailed.map(label => ({ ...label, priority: label.priority + 20 })),
+        ]
+        : [
+            { text: 'Flexor tendon paths', point: tendonLabels.groupPoint, priority: 1 },
+            { text: 'Thenar muscles', point: thenarLabel, priority: 2, preferredSide: 1 },
+            { text: 'Hypothenar muscles', point: hypothenarLabel, priority: 3, preferredSide: -1 },
+            { text: 'Lumbricals', point: lumbricalLabel, priority: 4 },
+            { text: 'Palmar interossei', point: interosseiLabel, priority: 5 },
+        ];
+    drawMuscleLabels(ctx, labels, labelMode, bounds, createMuscleLabelAvoidRegion({
+        wrist,
+        thumbCmc,
+        fingerMcps,
+        fingerPips,
+        palmWidth,
+        bounds,
+    }));
+    ctx.restore();
+    return { muscles: [] };
+}
+
+function drawBackSideMuscles(ctx, anatomy) {
+    const {
+        wrist,
+        thumbCmc,
+        thumbMcp,
+        thumbIp,
+        thumbTip,
+        fingerMcps,
+        fingerPips,
+        fingerDips,
+        fingerTips,
+        palmWidth,
+        scale,
+        labelMode,
+        bounds,
+    } = anatomy;
+    const labels = [];
+
+    ctx.save();
+    const palmCenter = averagePoints(fingerMcps);
+    const palmAxis = normalizeVector({
+        x: palmCenter.x - wrist.x,
+        y: palmCenter.y - wrist.y,
+    }, { x: 0, y: -1 });
+    const lateralAxis = perpendicularVector(palmAxis);
+    const dorsalWrist = moveToward(wrist, palmCenter, 0.12);
+    const tendonAnchors = [];
+    const hoodAnchors = [];
+
+    fingerMcps.forEach((mcp, index) => {
+        const startOffset = ([-0.24, -0.08, 0.08, 0.24][index]) * palmWidth;
+        const start = movePoint(dorsalWrist, lateralAxis, startOffset);
+        const entry = movePoint(moveToward(dorsalWrist, mcp, 0.36), lateralAxis, startOffset * 0.24);
+        const path = [
+            start,
+            entry,
+            moveToward(entry, mcp, 0.64),
+            mcp,
+            moveToward(mcp, fingerPips[index], 0.44),
+            moveToward(fingerPips[index], fingerDips[index], 0.68),
+            moveToward(fingerDips[index], fingerTips[index], 0.58),
+        ];
+        drawExtensorTendonPath(ctx, path, scale, { palmWidth });
+        drawExtensorHood(ctx, mcp, fingerPips[index], scale, 0.34);
+        tendonAnchors.push(mid(mcp, fingerPips[index]));
+        hoodAnchors.push(moveToward(mcp, fingerPips[index], 0.18));
+    });
+
+    // Four dorsal interossei occupy the spaces between the five metacarpal rays.
+    // Each is rendered as a subdued bipennate slip so the dorsal view stays
+    // visually distinct from the palmar interossei rather than reusing palm anatomy.
+    const metacarpalBases = [
+        moveToward(thumbCmc, thumbMcp, 0.48),
+        moveToward(wrist, fingerMcps[0], 0.40),
+        moveToward(wrist, fingerMcps[1], 0.40),
+        moveToward(wrist, fingerMcps[2], 0.40),
+        moveToward(wrist, fingerMcps[3], 0.40),
+    ];
+    const dorsalInsertions = [
+        moveToward(fingerMcps[0], fingerPips[0], 0.18),
+        moveToward(fingerMcps[1], fingerPips[1], 0.18),
+        moveToward(fingerMcps[1], fingerPips[1], 0.18),
+        moveToward(fingerMcps[2], fingerPips[2], 0.18),
+    ];
+    const dorsalAnchors = [];
+    for (let i = 0; i < 4; i++) {
+        const anchor = drawBipennateDorsalInterosseous(ctx, {
+            baseA: metacarpalBases[i],
+            baseB: metacarpalBases[i + 1],
+            insertion: dorsalInsertions[i],
+            scale,
+            alpha: 0.38 - i * 0.015,
+        });
+        dorsalAnchors.push(anchor);
+    }
+
+    const thumbPath = [
+        moveToward(wrist, thumbCmc, 0.16),
+        moveToward(thumbCmc, thumbMcp, 0.10),
+        thumbMcp,
+        moveToward(thumbMcp, thumbIp, 0.54),
+        moveToward(thumbIp, thumbTip, 0.66),
+    ];
+    drawExtensorTendonPath(ctx, thumbPath, scale, { thumb: true, palmWidth });
+
+    labels.push(
+        { text: 'Extensor tendon paths', point: averagePoints([...tendonAnchors, mid(thumbMcp, thumbIp)]), priority: 1 },
+        { text: 'Dorsal interossei', point: averagePoints(dorsalAnchors), priority: 2 },
+    );
+    if (labelMode === 'detailed') {
+        labels.push(
+            { text: 'Extensor digitorum tendons', point: averagePoints(tendonAnchors), priority: 3, preferredSide: -1 },
+            { text: 'Extensor pollicis tendon', point: mid(thumbMcp, thumbIp), priority: 4, preferredSide: 1 },
+            { text: 'Extensor hood', point: averagePoints(hoodAnchors), priority: 5 },
+        );
+    }
+
+    drawMuscleLabels(ctx, labels, labelMode, bounds, createMuscleLabelAvoidRegion({
+        wrist,
+        thumbCmc,
+        fingerMcps,
+        fingerPips,
+        palmWidth,
+        bounds,
+    }));
+    ctx.restore();
+    return { muscles: [] };
+}
+
+function drawSimplifiedThenarMuscleMass(ctx, anatomy) {
+    const {
+        wrist,
+        thumbCmc,
+        thumbMcp,
+        thumbIp,
+        indexMcp,
+        palmWidth,
+        scale,
+    } = anatomy;
+    const palmCenter = averagePoints([wrist, thumbCmc, thumbMcp, indexMcp]);
+    const thumbAxis = normalizeVector({
+        x: thumbMcp.x - thumbCmc.x,
+        y: thumbMcp.y - thumbCmc.y,
+    }, normalizeVector({ x: thumbIp.x - thumbMcp.x, y: thumbIp.y - thumbMcp.y }, { x: -1, y: 0 }));
+    const thumbSide = normalizeVector({
+        x: thumbCmc.x - palmCenter.x,
+        y: thumbCmc.y - palmCenter.y,
+    }, perpendicularVector(thumbAxis));
+    const palmSide = normalizeVector({
+        x: palmCenter.x - thumbCmc.x,
+        y: palmCenter.y - thumbCmc.y,
+    }, { x: -thumbSide.x, y: -thumbSide.y });
+    const webSpace = moveToward(thumbMcp, indexMcp, 0.38);
+    const wristCentral = moveToward(wrist, indexMcp, 0.26);
+    const metacarpalBase = moveToward(thumbCmc, thumbMcp, 0.20);
+    const metacarpalMid = moveToward(thumbCmc, thumbMcp, 0.48);
+    const metacarpalHead = moveToward(thumbCmc, thumbMcp, 0.68);
+    const wristTail = movePoint(moveToward(wrist, thumbCmc, 0.22), thumbSide, palmWidth * 0.035);
+    const proximalOuterBlend = movePoint(moveToward(wrist, thumbCmc, 0.35), thumbSide, palmWidth * 0.115);
+    const thumbBaseShelf = movePoint(moveToward(metacarpalBase, wristTail, 0.12), thumbSide, palmWidth * 0.17);
+    const thumbBaseFullness = movePoint(metacarpalBase, thumbSide, palmWidth * 0.225);
+    const moundPeak = movePoint(metacarpalMid, thumbSide, palmWidth * 0.24);
+    const distalRidge = movePoint(metacarpalHead, thumbSide, palmWidth * 0.15);
+    const webOuterBlend = moveToward(distalRidge, webSpace, 0.46);
+    const webTaper = moveToward(webSpace, thumbMcp, 0.06);
+    const webInnerBlend = movePoint(moveToward(webSpace, wristCentral, 0.14), palmSide, palmWidth * 0.020);
+    const centralPalmBlend = movePoint(moveToward(webSpace, wristCentral, 0.38), palmSide, palmWidth * 0.060);
+    const proximalPalmBlend = movePoint(moveToward(wristCentral, thumbCmc, 0.44), palmSide, palmWidth * 0.075);
+    const wristBlend = moveToward(proximalPalmBlend, wristTail, 0.48);
+    const points = [
+        wristTail,
+        proximalOuterBlend,
+        thumbBaseShelf,
+        thumbBaseFullness,
+        moundPeak,
+        distalRidge,
+        webOuterBlend,
+        webTaper,
+        webInnerBlend,
+        centralPalmBlend,
+        proximalPalmBlend,
+        wristBlend,
+    ];
+    const labelPoint = movePoint(
+        moveToward(averagePoints(points), thumbMcp, 0.08),
+        thumbSide,
+        palmWidth * 0.03
+    );
+
+    drawAnatomicalMuscleMass(ctx, points, {
+        light: MEDICAL_MUSCLE_COLORS.thenarLight,
+        mid: MEDICAL_MUSCLE_COLORS.thenarMid,
+        dark: MEDICAL_MUSCLE_COLORS.thenarDark,
+        // Keep the mound anatomically legible, but soften its boundary so it
+        // reads as tissue embedded in the palm rather than a pasted patch.
+        alpha: 0.76,
+        scale,
+        fiberA: moveToward(wristTail, thumbBaseFullness, 0.48),
+        fiberB: moveToward(webTaper, thumbIp, 0.08),
+        fiberSpread: palmWidth * 0.50,
+        fiberCount: 11,
+        shadowAlpha: 0.15,
+        strokeAlpha: 0.065,
+        feather: true,
+        featherAlpha: 0.58,
+        featherScale: 1.115,
+        featherColor: 'rgba(118, 46, 49, 0.40)',
+    });
+
+    return labelPoint;
+}
+
+function drawSimplifiedHypothenarMuscleMass(ctx, anatomy) {
+    const {
+        wrist,
+        middleMcp,
+        ringMcp,
+        pinkyMcp,
+        palmWidth,
+        scale,
+    } = anatomy;
+    const palmCenter = averagePoints([wrist, middleMcp, ringMcp, pinkyMcp]);
+    const fifthMetacarpalAxis = normalizeVector({
+        x: pinkyMcp.x - wrist.x,
+        y: pinkyMcp.y - wrist.y,
+    }, normalizeVector({ x: ringMcp.x - wrist.x, y: ringMcp.y - wrist.y }, { x: 0, y: -1 }));
+    const ulnarSide = normalizeVector({
+        x: pinkyMcp.x - palmCenter.x,
+        y: pinkyMcp.y - palmCenter.y,
+    }, perpendicularVector(fifthMetacarpalAxis));
+    const palmSide = normalizeVector({
+        x: palmCenter.x - pinkyMcp.x,
+        y: palmCenter.y - pinkyMcp.y,
+    }, { x: -ulnarSide.x, y: -ulnarSide.y });
+    const fifthBase = moveToward(wrist, pinkyMcp, 0.30);
+    const fifthMid = moveToward(wrist, pinkyMcp, 0.53);
+    const fifthHead = moveToward(wrist, pinkyMcp, 0.72);
+    const wristTail = movePoint(moveToward(wrist, pinkyMcp, 0.20), ulnarSide, palmWidth * 0.035);
+    const proximalOuter = movePoint(fifthBase, ulnarSide, palmWidth * 0.13);
+    const lowerBelly = movePoint(moveToward(fifthBase, fifthMid, 0.35), ulnarSide, palmWidth * 0.155);
+    const moundPeak = movePoint(fifthMid, ulnarSide, palmWidth * 0.17);
+    const distalOuter = movePoint(fifthHead, ulnarSide, palmWidth * 0.105);
+    const mcpTaper = moveToward(pinkyMcp, ringMcp, 0.13);
+    const distalInner = movePoint(moveToward(mcpTaper, ringMcp, 0.26), palmSide, palmWidth * 0.035);
+    const centralBlend = movePoint(moveToward(fifthMid, ringMcp, 0.36), palmSide, palmWidth * 0.058);
+    const proximalBlend = movePoint(moveToward(fifthBase, middleMcp, 0.24), palmSide, palmWidth * 0.060);
+    const wristBlend = moveToward(proximalBlend, wristTail, 0.50);
+    const points = [
+        wristTail,
+        proximalOuter,
+        lowerBelly,
+        moundPeak,
+        distalOuter,
+        mcpTaper,
+        distalInner,
+        centralBlend,
+        proximalBlend,
+        wristBlend,
+    ];
+    const labelPoint = movePoint(
+        moveToward(averagePoints(points), pinkyMcp, 0.04),
+        ulnarSide,
+        palmWidth * 0.025
+    );
+
+    drawAnatomicalMuscleMass(ctx, points, {
+        light: MEDICAL_MUSCLE_COLORS.hypothenarLight,
+        mid: MEDICAL_MUSCLE_COLORS.hypothenarMid,
+        dark: MEDICAL_MUSCLE_COLORS.hypothenarDark,
+        alpha: 0.73,
+        scale,
+        fiberA: moveToward(wristTail, lowerBelly, 0.42),
+        fiberB: moveToward(mcpTaper, pinkyMcp, 0.08),
+        fiberSpread: palmWidth * 0.36,
+        fiberCount: 9,
+        shadowAlpha: 0.14,
+        strokeAlpha: 0.06,
+        feather: true,
+        featherAlpha: 0.56,
+        featherScale: 1.115,
+        featherColor: 'rgba(105, 42, 47, 0.38)',
+    });
+
+    return labelPoint;
+}
+
+function drawSimplifiedLumbricals(ctx, anatomy) {
+    const {
+        wrist,
+        thumbCmc,
+        fingerMcps,
+        fingerPips,
+        palmWidth,
+        scale,
+    } = anatomy;
+    const palmCenter = averagePoints(fingerMcps);
+    const palmAxis = normalizeVector({
+        x: palmCenter.x - wrist.x,
+        y: palmCenter.y - wrist.y,
+    }, { x: 0, y: -1 });
+    const lateralAxis = perpendicularVector(palmAxis);
+    // Lumbricals arise from FDP tendon territory and approach the radial/thumb
+    // side of each extensor expansion. Using the visible thumb ray preserves
+    // this relationship for either hand in mirrored display space.
+    const radialAxis = normalizeVector({
+        x: thumbCmc.x - palmCenter.x,
+        y: thumbCmc.y - palmCenter.y,
+    }, lateralAxis);
+    const anchors = [];
+
+    fingerMcps.forEach((mcp, index) => {
+        const pip = fingerPips[index];
+        const radialOffsets = [0.072, 0.058, 0.050, 0.044];
+        const lateralBias = [-0.032, -0.010, 0.012, 0.030][index] * palmWidth;
+        const distalPalm = moveToward(wrist, mcp, 0.54);
+        const origin = movePoint(
+            movePoint(distalPalm, radialAxis, palmWidth * radialOffsets[index]),
+            lateralAxis,
+            lateralBias
+        );
+        const insertion = movePoint(
+            moveToward(mcp, pip, 0.28),
+            radialAxis,
+            palmWidth * radialOffsets[index] * 1.14
+        );
+        const control = movePoint(
+            moveToward(origin, insertion, 0.52),
+            lateralAxis,
+            ([0.035, 0.016, -0.016, -0.035][index] * palmWidth)
+        );
+        const endWidth = Math.max(1.95, 2.25 * scale);
+        const midWidth = Math.max(5.4, 7.0 * scale) * ([0.94, 1.0, 0.94, 0.88][index]);
+
+        drawLumbricalMuscle(ctx, origin, control, insertion, endWidth, midWidth, 0.84);
+        anchors.push(moveToward(origin, insertion, 0.52));
+    });
+
+    return averagePoints(anchors);
+}
+
+function drawSimplifiedPalmarInterossei(ctx, anatomy) {
+    const {
+        wrist,
+        fingerMcps,
+        palmWidth,
+        scale,
+    } = anatomy;
+    const palmCenter = averagePoints(fingerMcps);
+    const palmAxis = normalizeVector({
+        x: palmCenter.x - wrist.x,
+        y: palmCenter.y - wrist.y,
+    }, { x: 0, y: -1 });
+    const lateralAxis = perpendicularVector(palmAxis);
+    const anchors = [];
+
+    [
+        { fingerIndex: 0, side: 1, bias: -0.040, width: 1.00 },
+        { fingerIndex: 2, side: -1, bias: 0.030, width: 1.04 },
+        { fingerIndex: 3, side: -1, bias: 0.056, width: 0.90 },
+    ].forEach(({ fingerIndex, side, bias, width }) => {
+        const mcp = fingerMcps[fingerIndex];
+        const base = moveToward(wrist, mcp, fingerIndex === 0 ? 0.39 : 0.35);
+        const distal = moveToward(wrist, mcp, 0.76);
+        const offset = bias * palmWidth;
+        const a = movePoint(base, lateralAxis, offset);
+        const b = movePoint(distal, lateralAxis, offset + side * palmWidth * 0.026);
+        const endWidth = Math.max(1.45, 1.78 * scale) * width;
+        const midWidth = Math.max(3.9, 4.85 * scale) * width;
+
+        drawInterosseousBand(ctx, a, b, endWidth, midWidth);
+        anchors.push(moveToward(a, b, 0.55));
+    });
+
+    return averagePoints(anchors);
+}
+
+function drawCleanFlexorTendonLayer(ctx, anatomy) {
+    const {
+        wrist,
+        thumbCmc,
+        thumbMcp,
+        thumbIp,
+        thumbTip,
+        fingerMcps,
+        fingerPips,
+        fingerDips,
+        fingerTips,
+        palmWidth,
+        palmLength,
+        scale,
+    } = anatomy;
+    const palmCenter = averagePoints(fingerMcps);
+    const palmAxis = normalizeVector({
+        x: palmCenter.x - wrist.x,
+        y: palmCenter.y - wrist.y,
+    }, { x: 0, y: -1 });
+    const lateralAxis = perpendicularVector(palmAxis);
+    const baseCenter = moveToward(wrist, palmCenter, 0.10);
+    const wristBundle = moveToward(wrist, palmCenter, 0.22);
+    const labels = [];
+    const groupAnchors = [];
+
+    drawFlexorRetinaculumBand(ctx, wrist, palmCenter, lateralAxis, palmWidth, scale);
+
+    fingerMcps.forEach((mcp, index) => {
+        const pip = fingerPips[index];
+        const dip = fingerDips[index];
+        const tip = fingerTips[index];
+        const naturalSpread = [-0.18, -0.05, 0.06, 0.18][index] * palmWidth;
+        const fanBias = [-0.08, 0.04, -0.03, 0.07][index] * palmWidth;
+        const depthShift = [0.00, -0.02, 0.018, 0.035][index];
+        const lateralProjection = (mcp.x - palmCenter.x) * lateralAxis.x + (mcp.y - palmCenter.y) * lateralAxis.y;
+        // Start as a broad carpal-tunnel bundle, then fan gradually toward
+        // each finger ray instead of converging into one bright wrist point.
+        const baseOffset = clamp(lateralProjection * 0.46 + naturalSpread * 0.40, -palmWidth * 0.30, palmWidth * 0.30);
+        const start = movePoint(baseCenter, lateralAxis, baseOffset);
+        const bundlePoint = movePoint(moveToward(wristBundle, palmCenter, depthShift), lateralAxis, baseOffset * 0.78);
+        const palmControl = movePoint(moveToward(bundlePoint, palmCenter, 0.52 + index * 0.018), lateralAxis, baseOffset * 0.34 + fanBias * 0.14);
+        const palmFan = movePoint(moveToward(palmCenter, mcp, 0.34 + index * 0.025), lateralAxis, baseOffset * 0.16 + fanBias * 0.12);
+        const mcpControl = moveToward(palmCenter, mcp, 0.74 + index * 0.018);
+        const path = [
+            start,
+            bundlePoint,
+            palmControl,
+            palmFan,
+            mcpControl,
+            mcp,
+            moveToward(mcp, pip, 0.46),
+            moveToward(mcp, pip, 0.82),
+            moveToward(pip, dip, 0.70),
+            moveToward(dip, tip, 0.66),
+        ];
+        drawBezierTendonPath(ctx, path, scale, { fingerIndex: index, palmWidth });
+        const labelPoint = mid(mcp, pip);
+        labels.push({
+            text: `${['Index', 'Middle', 'Ring', 'Pinky'][index]} flexor tendon path`,
+            point: labelPoint,
+            priority: index + 2,
+            preferredSide: index < 2 ? 1 : -1,
+        });
+        groupAnchors.push(labelPoint);
+    });
+
+    const thumbVector = normalizeVector({
+        x: thumbMcp.x - wrist.x,
+        y: thumbMcp.y - wrist.y,
+    }, palmAxis);
+    const thumbStart = moveToward(wrist, thumbCmc, 0.18);
+    const thumbBundle = moveToward(thumbStart, thumbCmc, 0.38);
+    const thumbPath = [
+        thumbStart,
+        thumbBundle,
+        moveToward(thumbBundle, thumbCmc, 0.62),
+        moveToward(thumbCmc, thumbMcp, 0.48),
+        thumbMcp,
+        movePoint(moveToward(thumbMcp, thumbIp, 0.40), thumbVector, palmLength * 0.012),
+        moveToward(thumbIp, thumbTip, 0.70),
+    ];
+    drawBezierTendonPath(ctx, thumbPath, scale, { thumb: true, palmWidth });
+    const thumbLabelPoint = mid(thumbMcp, thumbIp);
+    labels.unshift({
+        text: 'Thumb flexor tendon path',
+        point: thumbLabelPoint,
+        priority: 1,
+        preferredSide: 1,
+    });
+    groupAnchors.push(thumbLabelPoint);
+
+    return {
+        detailed: labels,
+        groupPoint: averagePoints(groupAnchors),
+    };
+}
+
+function drawFlexorRetinaculumBand(ctx, wrist, palmCenter, lateralAxis, palmWidth, scale) {
+    const center = moveToward(wrist, palmCenter, 0.09);
+    const palmAxis = normalizeVector({
+        x: palmCenter.x - wrist.x,
+        y: palmCenter.y - wrist.y,
+    }, { x: 0, y: -1 });
+    const halfWidth = palmWidth * 0.54;
+    const start = movePoint(center, lateralAxis, -halfWidth);
+    const end = movePoint(center, lateralAxis, halfWidth);
+    const palmBow = moveToward(center, palmCenter, 0.18);
+    const bandWidth = Math.max(11.5, 13.4 * scale);
+
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    ctx.globalAlpha *= 0.34;
+    ctx.strokeStyle = 'rgba(78, 72, 64, 0.34)';
+    ctx.lineWidth = bandWidth + 5.0 * scale;
+    ctx.beginPath();
+    ctx.moveTo(start.x, start.y);
+    ctx.quadraticCurveTo(palmBow.x, palmBow.y, end.x, end.y);
+    ctx.stroke();
+
+    ctx.globalAlpha *= 0.82;
+    ctx.strokeStyle = 'rgba(232, 222, 204, 0.70)';
+    ctx.lineWidth = bandWidth;
+    ctx.beginPath();
+    ctx.moveTo(start.x, start.y);
+    ctx.quadraticCurveTo(palmBow.x, palmBow.y, end.x, end.y);
+    ctx.stroke();
+
+    ctx.globalAlpha *= 0.88;
+    ctx.strokeStyle = 'rgba(252, 246, 232, 0.60)';
+    ctx.lineWidth = Math.max(1.4, bandWidth * 0.34);
+    for (let i = -2; i <= 2; i++) {
+        const offset = i * bandWidth * 0.23;
+        const offsetStart = movePoint(start, palmAxis, offset);
+        const offsetEnd = movePoint(end, palmAxis, offset);
+        ctx.beginPath();
+        ctx.moveTo(offsetStart.x, offsetStart.y);
+        ctx.quadraticCurveTo(palmBow.x, palmBow.y, offsetEnd.x, offsetEnd.y);
+        ctx.stroke();
+    }
+    ctx.globalAlpha *= 0.72;
+    ctx.strokeStyle = 'rgba(255, 250, 238, 0.48)';
+    ctx.lineWidth = Math.max(1.5, bandWidth * 0.34);
+    [-0.34, -0.16, 0, 0.16, 0.34].forEach((spread) => {
+        const entry = movePoint(moveToward(center, palmCenter, 0.48), lateralAxis, palmWidth * spread);
+        ctx.beginPath();
+        ctx.moveTo(center.x, center.y);
+        const control = movePoint(moveToward(center, entry, 0.55), lateralAxis, palmWidth * spread * 0.08);
+        ctx.quadraticCurveTo(control.x, control.y, entry.x, entry.y);
+        ctx.stroke();
+    });
+    ctx.restore();
+}
+
+function drawBezierTendonPath(ctx, points, scale, options = {}) {
+    if (points.length < 4) return;
+    const palmWidth = options.palmWidth ?? 120;
+    const baseWidth = options.thumb
+        ? clamp(palmWidth * 0.070, 7.0 * scale, 13.5 * scale)
+        : clamp(palmWidth * 0.056, 5.8 * scale, 11.0 * scale);
+    const samples = sampleBezierSpline(points, 11);
+    const widthProfile = createTendonWidthProfile(samples.length, baseWidth, options.thumb);
+
+    ctx.save();
+    drawTendonRibbon(ctx, samples, widthProfile.map(width => width + 3.4 * scale), {
+        fill: 'rgba(58, 54, 48, 0.13)',
+        offset: { x: 0.9 * scale, y: 1.25 * scale },
+    });
+    drawTendonRibbon(ctx, samples, widthProfile, {
+        fill: 'rgba(222, 213, 196, 0.56)',
+        stroke: 'rgba(120, 110, 96, 0.17)',
+        lineWidth: 0.5 * scale,
+    });
+    drawTendonRibbon(ctx, samples, widthProfile.map(width => Math.max(1.15 * scale, width * 0.40)), {
+        fill: 'rgba(252, 246, 231, 0.17)',
+    });
+    drawTendonEdgeContour(ctx, samples, widthProfile, 'rgba(104, 94, 82, 0.10)', 0.34 * scale);
+    drawTendonCenterHighlight(ctx, samples, Math.max(0.42, baseWidth * 0.045), 'rgba(255, 252, 242, 0.08)');
+    ctx.restore();
+}
+
+function createTendonWidthProfile(count, baseWidth, isThumb = false) {
+    const widths = [];
+    for (let index = 0; index < count; index++) {
+        const t = count <= 1 ? 0 : index / (count - 1);
+        const palmBulge = Math.exp(-((t - 0.24) ** 2) / 0.024) * 0.30;
+        const mcpWaist = Math.exp(-((t - 0.58) ** 2) / 0.012) * 0.12;
+        const jointSoftening = Math.exp(-((t - 0.78) ** 2) / 0.018) * 0.08;
+        const distalTaper = isThumb
+            ? 1 - t * 0.40
+            : 1 - t * 0.54;
+        const width = baseWidth * (distalTaper + palmBulge - mcpWaist + jointSoftening);
+        widths.push(Math.max(baseWidth * 0.28, width));
+    }
+    return widths;
+}
+
+function sampleBezierSpline(points, stepsPerSegment = 8) {
+    const samples = [];
+    for (let i = 0; i < points.length - 1; i++) {
+        const p0 = points[Math.max(0, i - 1)];
+        const p1 = points[i];
+        const p2 = points[i + 1];
+        const p3 = points[Math.min(points.length - 1, i + 2)];
+        const cp1 = {
+            x: p1.x + (p2.x - p0.x) / 6,
+            y: p1.y + (p2.y - p0.y) / 6,
+        };
+        const cp2 = {
+            x: p2.x - (p3.x - p1.x) / 6,
+            y: p2.y - (p3.y - p1.y) / 6,
+        };
+        for (let step = 0; step < stepsPerSegment; step++) {
+            if (i > 0 || step > 0) {
+                const t = step / stepsPerSegment;
+                samples.push(cubicBezierPoint(p1, cp1, cp2, p2, t));
+            } else {
+                samples.push(p1);
+            }
+        }
+    }
+    samples.push(points[points.length - 1]);
+    return samples;
+}
+
+function cubicBezierPoint(a, b, c, d, t) {
+    const mt = 1 - t;
+    const mt2 = mt * mt;
+    const t2 = t * t;
+    return {
+        x: a.x * mt2 * mt + b.x * 3 * mt2 * t + c.x * 3 * mt * t2 + d.x * t2 * t,
+        y: a.y * mt2 * mt + b.y * 3 * mt2 * t + c.y * 3 * mt * t2 + d.y * t2 * t,
+    };
+}
+
+function drawTendonRibbon(ctx, samples, widths, style) {
+    if (samples.length < 2) return;
+    const offset = style.offset || { x: 0, y: 0 };
+    const left = [];
+    const right = [];
+
+    samples.forEach((point, index) => {
+        const prev = samples[Math.max(0, index - 1)];
+        const next = samples[Math.min(samples.length - 1, index + 1)];
+        const tangent = normalizeVector({ x: next.x - prev.x, y: next.y - prev.y }, { x: 0, y: -1 });
+        const normal = perpendicularVector(tangent);
+        const width = Array.isArray(widths) ? widths[index] : widths;
+        const half = width / 2;
+        const x = point.x + offset.x;
+        const y = point.y + offset.y;
+        left.push({ x: x + normal.x * half, y: y + normal.y * half });
+        right.push({ x: x - normal.x * half, y: y - normal.y * half });
+    });
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(left[0].x, left[0].y);
+    for (let i = 1; i < left.length; i++) ctx.lineTo(left[i].x, left[i].y);
+    for (let i = right.length - 1; i >= 0; i--) ctx.lineTo(right[i].x, right[i].y);
+    ctx.closePath();
+    ctx.fillStyle = style.fill;
+    ctx.fill();
+    if (style.stroke) {
+        ctx.strokeStyle = style.stroke;
+        ctx.lineWidth = style.lineWidth ?? 1;
+        ctx.stroke();
+    }
+
+    const start = samples[0];
+    const end = samples[samples.length - 1];
+    const startWidth = Array.isArray(widths) ? widths[0] : widths;
+    const endWidth = Array.isArray(widths) ? widths[widths.length - 1] : widths;
+    ctx.fillStyle = style.fill;
+    ctx.beginPath();
+    ctx.arc(start.x + offset.x, start.y + offset.y, startWidth / 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(end.x + offset.x, end.y + offset.y, endWidth / 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+}
+
+function drawTendonEdgeContour(ctx, samples, widths, color, lineWidth) {
+    if (samples.length < 2) return;
+    const left = [];
+    const right = [];
+    samples.forEach((point, index) => {
+        const prev = samples[Math.max(0, index - 1)];
+        const next = samples[Math.min(samples.length - 1, index + 1)];
+        const tangent = normalizeVector({ x: next.x - prev.x, y: next.y - prev.y }, { x: 0, y: -1 });
+        const normal = perpendicularVector(tangent);
+        const half = widths[index] * 0.46;
+        left.push({ x: point.x + normal.x * half, y: point.y + normal.y * half });
+        right.push({ x: point.x - normal.x * half, y: point.y - normal.y * half });
+    });
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(0.35, lineWidth);
+    [left, right].forEach((edge) => {
+        ctx.beginPath();
+        ctx.moveTo(edge[0].x, edge[0].y);
+        for (let i = 1; i < edge.length; i++) ctx.lineTo(edge[i].x, edge[i].y);
+        ctx.stroke();
+    });
+    ctx.restore();
+}
+
+function drawTendonCenterHighlight(ctx, samples, width, color) {
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    ctx.moveTo(samples[0].x, samples[0].y);
+    for (let i = 1; i < samples.length; i++) ctx.lineTo(samples[i].x, samples[i].y);
+    ctx.stroke();
+    ctx.restore();
+}
+
+// Temporarily disabled while Muscles View is rebuilt one layer at a time.
+// eslint-disable-next-line no-unused-vars
+function taperedMusclePoints(a, b, startWidth, midWidth, endWidth, bow = 0) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 2) return [a, b];
+    const nx = -dy / len;
+    const ny = dx / len;
+    const center = {
+        x: (a.x + b.x) / 2 + nx * bow,
+        y: (a.y + b.y) / 2 + ny * bow,
+    };
+    return [
+        { x: a.x + nx * startWidth, y: a.y + ny * startWidth },
+        { x: center.x + nx * midWidth, y: center.y + ny * midWidth },
+        { x: b.x + nx * endWidth, y: b.y + ny * endWidth },
+        { x: b.x - nx * endWidth, y: b.y - ny * endWidth },
+        { x: center.x - nx * midWidth, y: center.y - ny * midWidth },
+        { x: a.x - nx * startWidth, y: a.y - ny * startWidth },
+    ];
+}
+
+// eslint-disable-next-line no-unused-vars
+function organicMusclePadPoints(center, axis, longRadius, shortRadius, skew = 0) {
+    const ux = axis.x;
+    const uy = axis.y;
+    const nx = -uy;
+    const ny = ux;
+    const factors = [0.78, 0.96, 1.08, 1.0, 0.88, 1.05, 0.94, 0.82, 0.90, 1.02, 0.95, 0.84];
+    return factors.map((factor, index) => {
+        const t = (index / factors.length) * Math.PI * 2;
+        const long = Math.cos(t) * longRadius * factor;
+        const short = Math.sin(t) * shortRadius * (1 + Math.sin(t * 2.0) * 0.08);
+        const taper = Math.sin(t) * longRadius * skew;
+        return {
+            x: center.x + ux * (long + taper) + nx * short,
+            y: center.y + uy * (long + taper) + ny * short,
+        };
+    });
+}
+
+function drawAnatomicalMuscleMass(ctx, points, options) {
+    if (!points.length) return;
+    const center = averagePoints(points);
+    const radius = Math.max(...points.map(point => dist(point, center)), 1);
+    const fiberCount = options.fiberCount ?? 7;
+    const fiberSpread = options.fiberSpread ?? radius * 0.55;
+
+    ctx.save();
+    ctx.globalAlpha *= options.alpha ?? 0.74;
+    if (options.feather) {
+        ctx.save();
+        ctx.globalAlpha *= options.featherAlpha ?? 0.34;
+        ctx.shadowColor = 'rgba(38, 12, 14, 0.28)';
+        ctx.shadowBlur = 10 * (options.scale ?? 1);
+        roundedClosedPath(ctx, expandPolygon(points, center, options.featherScale ?? 1.035));
+        ctx.fillStyle = options.featherColor || 'rgba(112, 46, 48, 0.34)';
+        ctx.fill();
+        ctx.restore();
+    }
+    const grad = ctx.createRadialGradient(
+        center.x - radius * 0.28,
+        center.y - radius * 0.24,
+        radius * 0.08,
+        center.x,
+        center.y,
+        radius * 1.15
+    );
+    grad.addColorStop(0, options.light);
+    grad.addColorStop(0.42, options.mid);
+    grad.addColorStop(1, options.dark);
+    roundedClosedPath(ctx, points);
+    ctx.fillStyle = grad;
+    ctx.shadowColor = `rgba(44, 18, 16, ${options.shadowAlpha ?? 0.34})`;
+    ctx.shadowBlur = 7 * (options.scale ?? 1);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = `rgba(86, 34, 36, ${options.strokeAlpha ?? 0.48})`;
+    ctx.lineWidth = 0.9;
+    ctx.stroke();
+
+    ctx.save();
+    roundedClosedPath(ctx, points);
+    ctx.clip();
+    const sideShade = ctx.createLinearGradient(center.x - radius, center.y - radius * 0.25, center.x + radius, center.y + radius * 0.25);
+    sideShade.addColorStop(0, 'rgba(64, 24, 24, 0.28)');
+    sideShade.addColorStop(0.38, 'rgba(255, 206, 186, 0.18)');
+    sideShade.addColorStop(0.62, 'rgba(255, 228, 208, 0.10)');
+    sideShade.addColorStop(1, 'rgba(62, 23, 25, 0.24)');
+    ctx.fillStyle = sideShade;
+    ctx.fillRect(center.x - radius * 1.2, center.y - radius * 1.2, radius * 2.4, radius * 2.4);
+    ctx.restore();
+
+    if (options.fiberA && options.fiberB) {
+        ctx.save();
+        roundedClosedPath(ctx, points);
+        ctx.clip();
+        drawMuscleFibers(ctx, options.fiberA, options.fiberB, fiberSpread, fiberCount, options.scale ?? 1);
+        ctx.restore();
+    }
+    ctx.restore();
+}
+
+function roundedClosedPath(ctx, points) {
+    ctx.beginPath();
+    points.forEach((point, index) => {
+        const next = points[(index + 1) % points.length];
+        const midPoint = mid(point, next);
+        if (index === 0) ctx.moveTo(midPoint.x, midPoint.y);
+        else ctx.quadraticCurveTo(point.x, point.y, midPoint.x, midPoint.y);
+    });
+    ctx.closePath();
+}
+
+function expandPolygon(points, center, amount) {
+    return points.map(point => ({
+        x: center.x + (point.x - center.x) * amount,
+        y: center.y + (point.y - center.y) * amount,
+    }));
+}
+
+function drawMuscleFibers(ctx, a, b, spread, count, scale) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 2) return;
+    const ux = dx / len;
+    const uy = dy / len;
+    const nx = -dy / len;
+    const ny = dx / len;
+    const seed = (a.x * 0.021 + a.y * 0.017 + b.x * 0.013 + b.y * 0.029) % 7;
+    ctx.globalAlpha *= 0.46;
+    ctx.strokeStyle = 'rgba(246, 184, 168, 0.62)';
+    ctx.lineCap = 'round';
+    for (let i = 0; i < count; i++) {
+        const t = count === 1 ? 0 : i / (count - 1);
+        const offset = (t - 0.5) * spread;
+        const startAdvance = 0.025 + ((i * 0.37 + seed) % 1) * 0.070;
+        const endRetreat = 0.040 + ((i * 0.23 + seed * 0.5) % 1) * 0.095;
+        const start = {
+            x: a.x + ux * len * startAdvance + nx * offset,
+            y: a.y + uy * len * startAdvance + ny * offset,
+        };
+        const end = {
+            x: b.x - ux * len * endRetreat + nx * offset * (0.48 + Math.sin(seed + i) * 0.05),
+            y: b.y - uy * len * endRetreat + ny * offset * (0.48 + Math.sin(seed + i) * 0.05),
+        };
+        const control = {
+            x: mid(start, end).x + nx * Math.sin(seed + i * 1.9) * scale * 1.6,
+            y: mid(start, end).y + ny * Math.sin(seed + i * 1.9) * scale * 1.6,
+        };
+        ctx.lineWidth = Math.max(0.42, (0.58 + (i % 3) * 0.07) * scale);
+        ctx.beginPath();
+        ctx.moveTo(start.x, start.y);
+        ctx.quadraticCurveTo(control.x, control.y, end.x, end.y);
+        ctx.stroke();
+    }
+    ctx.globalAlpha /= 0.46;
+}
+
+function drawInterosseousBand(ctx, a, b, endWidth, midWidth) {
+    const axis = normalizeVector({ x: b.x - a.x, y: b.y - a.y }, { x: 0, y: -1 });
+    const normal = perpendicularVector(axis);
+    const control = movePoint(mid(a, b), normal, Math.sin(a.x * 0.013 + b.y * 0.017) * midWidth * 0.18);
+    drawIntrinsicMuscleRibbon(ctx, [a, control, b], {
+        startWidth: Math.max(1.1, endWidth * 0.82),
+        midWidth,
+        endWidth: Math.max(1.2, endWidth),
+        alpha: 0.68,
+        tone: 'deep',
+    });
+}
+
+function drawLumbricalMuscle(ctx, a, control, b, endWidth, midWidth, alpha) {
+    drawIntrinsicMuscleRibbon(ctx, [a, control, b], {
+        startWidth: Math.max(1.25, endWidth * 0.76),
+        midWidth,
+        endWidth,
+        alpha,
+        tone: 'lumbrical',
+    });
+}
+
+function drawIntrinsicMuscleRibbon(ctx, points, options = {}) {
+    if (points.length < 2) return;
+    const samples = sampleBezierSpline(points, 10);
+    const widthProfile = createMuscleWidthProfile(
+        samples.length,
+        options.startWidth ?? 2,
+        options.midWidth ?? 5,
+        options.endWidth ?? 2
+    );
+    const palette = options.tone === 'deep'
+        ? {
+            shadow: 'rgba(58, 24, 28, 0.26)',
+            fill: 'rgba(128, 54, 58, 0.62)',
+            highlight: 'rgba(211, 116, 105, 0.28)',
+            edge: 'rgba(82, 34, 38, 0.30)',
+        }
+        : {
+            shadow: 'rgba(66, 26, 30, 0.26)',
+            fill: 'rgba(173, 67, 67, 0.64)',
+            highlight: 'rgba(233, 142, 126, 0.31)',
+            edge: 'rgba(97, 37, 41, 0.32)',
+        };
+
+    ctx.save();
+    ctx.globalAlpha *= options.alpha ?? 0.72;
+    drawTendonRibbon(ctx, samples, widthProfile.map(width => width + 2.2), {
+        fill: palette.shadow,
+        offset: { x: 0.65, y: 0.95 },
+    });
+    drawTendonRibbon(ctx, samples, widthProfile, {
+        fill: palette.fill,
+        stroke: palette.edge,
+        lineWidth: 0.45,
+    });
+    drawTendonRibbon(ctx, samples, widthProfile.map(width => Math.max(0.72, width * 0.36)), {
+        fill: palette.highlight,
+    });
+    drawTendonEdgeContour(ctx, samples, widthProfile, palette.edge, 0.38);
+    drawTendonCenterHighlight(ctx, samples, Math.max(0.36, Math.max(...widthProfile) * 0.07), 'rgba(250, 188, 172, 0.25)');
+    ctx.restore();
+}
+
+function createMuscleWidthProfile(count, startWidth, midWidth, endWidth) {
+    const widths = [];
+    for (let index = 0; index < count; index++) {
+        const t = count <= 1 ? 0 : index / (count - 1);
+        const linear = startWidth + (endWidth - startWidth) * t;
+        const belly = Math.sin(Math.PI * t) ** 0.82;
+        widths.push(linear + (midWidth - linear) * belly);
+    }
+    return widths;
+}
+
+// eslint-disable-next-line no-unused-vars
+function drawFlexorTendonPath(ctx, points, scale, options = {}) {
+    if (points.length < 2) return;
+    const width = options.thumb
+        ? (options.referenceStyle ? 2.85 : 3.15) * scale
+        : options.deep
+            ? (options.referenceStyle ? 1.65 : 1.9) * scale
+            : (options.referenceStyle ? 2.45 : 2.75) * scale;
+    const coreWidth = Math.max(0.95, width * 0.50);
+
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.globalAlpha *= options.deep ? 0.72 : 0.88;
+    ctx.strokeStyle = options.deep
+        ? 'rgba(218, 209, 193, 0.52)'
+        : 'rgba(232, 219, 200, 0.70)';
+    ctx.lineWidth = width;
+    if (options.taper) drawTaperedSmoothPath(ctx, points, width, width * 0.45);
+    else {
+        drawSmoothPolyline(ctx, points);
+        ctx.stroke();
+    }
+
+    ctx.globalAlpha *= options.deep ? 0.88 : 0.96;
+    ctx.strokeStyle = options.deep
+        ? 'rgba(244, 235, 220, 0.78)'
+        : 'rgba(252, 244, 228, 0.94)';
+    ctx.lineWidth = coreWidth;
+    if (options.taper) drawTaperedSmoothPath(ctx, points, coreWidth, Math.max(0.65, coreWidth * 0.52));
+    else {
+        drawSmoothPolyline(ctx, points);
+        ctx.stroke();
+    }
+
+    if (!options.deep && points.length >= 4) {
+        const split = points[points.length - 3];
+        const end = points[points.length - 2];
+        const dx = end.x - split.x;
+        const dy = end.y - split.y;
+        const len = Math.max(1, Math.hypot(dx, dy));
+        const nx = -dy / len;
+        const ny = dx / len;
+        ctx.globalAlpha *= 0.70;
+        ctx.lineWidth = Math.max(0.55, coreWidth * 0.58);
+        [-1, 1].forEach((side) => {
+            ctx.beginPath();
+            ctx.moveTo(split.x, split.y);
+            ctx.quadraticCurveTo(
+                mid(split, end).x + nx * side * 2.4 * scale,
+                mid(split, end).y + ny * side * 2.4 * scale,
+                end.x + nx * side * 2.2 * scale,
+                end.y + ny * side * 2.2 * scale
+            );
+            ctx.stroke();
+        });
+    }
+    ctx.restore();
+}
+
+// eslint-disable-next-line no-unused-vars
+function drawCentralFlexorBundle(ctx, origin, fingerMcps, scale, alpha) {
+    const palmCenter = averagePoints(fingerMcps);
+    const centerPath = [
+        moveToward(origin, palmCenter, -0.28),
+        origin,
+        moveToward(origin, palmCenter, 0.38),
+    ];
+    ctx.save();
+    ctx.globalAlpha *= alpha;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = 'rgba(226, 211, 193, 0.56)';
+    ctx.lineWidth = 8.2 * scale;
+    drawSmoothPolyline(ctx, centerPath);
+    ctx.stroke();
+
+    ctx.globalAlpha *= 0.88;
+    ctx.strokeStyle = 'rgba(252, 244, 228, 0.82)';
+    ctx.lineWidth = 2.6 * scale;
+    fingerMcps.forEach((mcp, index) => {
+        const laneOffset = (index - 1.5) * 0.55 * scale;
+        drawSmoothPolyline(ctx, [
+            { x: centerPath[0].x + laneOffset, y: centerPath[0].y },
+            { x: origin.x + laneOffset, y: origin.y },
+            moveToward(origin, mcp, 0.34),
+        ]);
+        ctx.stroke();
+    });
+    ctx.restore();
+}
+
+function drawTaperedSmoothPath(ctx, points, startWidth, endWidth) {
+    if (points.length < 2) return;
+    const originalWidth = ctx.lineWidth;
+    for (let i = 0; i < points.length - 1; i++) {
+        const t = points.length === 2 ? 0 : i / (points.length - 2);
+        ctx.lineWidth = startWidth + (endWidth - startWidth) * t;
+        const a = points[i];
+        const b = points[i + 1];
+        const control = i < points.length - 2 ? points[i + 1] : mid(a, b);
+        const end = i < points.length - 2 ? mid(points[i + 1], points[i + 2]) : b;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.quadraticCurveTo(control.x, control.y, end.x, end.y);
+        ctx.stroke();
+    }
+    ctx.lineWidth = originalWidth;
+}
+
+// eslint-disable-next-line no-unused-vars
+function drawTransverseCarpalLigament(ctx, radialPoint, ulnarPoint, palmPoint, scale, alpha) {
+    const center = mid(radialPoint, ulnarPoint);
+    const dx = ulnarPoint.x - radialPoint.x;
+    const dy = ulnarPoint.y - radialPoint.y;
+    const len = Math.max(1, Math.hypot(dx, dy));
+    const ux = dx / len;
+    const uy = dy / len;
+    const nx = -uy;
+    const ny = ux;
+    const curveTowardPalm = {
+        x: center.x + (palmPoint.x - center.x) * 0.30,
+        y: center.y + (palmPoint.y - center.y) * 0.30,
+    };
+    const width = 5.4 * scale;
+
+    ctx.save();
+    ctx.globalAlpha *= alpha;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = 'rgba(224, 208, 190, 0.64)';
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    ctx.moveTo(radialPoint.x, radialPoint.y);
+    ctx.quadraticCurveTo(curveTowardPalm.x, curveTowardPalm.y, ulnarPoint.x, ulnarPoint.y);
+    ctx.stroke();
+
+    ctx.globalAlpha *= 0.70;
+    ctx.strokeStyle = 'rgba(252, 244, 228, 0.78)';
+    ctx.lineWidth = Math.max(0.8, width * 0.22);
+    for (let i = -2; i <= 2; i++) {
+        const offset = i * width * 0.16;
+        ctx.beginPath();
+        ctx.moveTo(radialPoint.x + nx * offset, radialPoint.y + ny * offset);
+        ctx.quadraticCurveTo(
+            curveTowardPalm.x + nx * offset,
+            curveTowardPalm.y + ny * offset,
+            ulnarPoint.x + nx * offset,
+            ulnarPoint.y + ny * offset
+        );
+        ctx.stroke();
+    }
+    ctx.restore();
+}
+
+// eslint-disable-next-line no-unused-vars
+function drawBackHandAnatomy(ctx, anatomy) {
+    const {
+        wrist,
+        thumbCmc,
+        thumbMcp,
+        thumbIp,
+        thumbTip,
+        fingerMcps,
+        fingerPips,
+        fingerDips,
+        fingerTips,
+        scale,
+        lowConfidence,
+        labels,
+    } = anatomy;
+    const centralDorsalWrist = moveToward(wrist, averagePoints(fingerMcps), 0.16);
+    const dorsalPalm = moveToward(wrist, averagePoints(fingerMcps), 0.48);
+    const tendonLabelAnchors = [];
+    const hoodAnchors = [];
+
+    fingerMcps.forEach((mcp, index) => {
+        const entry = moveToward(centralDorsalWrist, mcp, 0.42);
+        const path = [
+            centralDorsalWrist,
+            entry,
+            mcp,
+            fingerPips[index],
+            fingerDips[index],
+            fingerTips[index],
+        ];
+        drawExtensorTendonPath(ctx, path, scale, { alpha: lowConfidence ? 0.46 : 0.66 });
+        drawExtensorHood(ctx, mcp, fingerPips[index], scale, lowConfidence ? 0.34 : 0.54);
+        tendonLabelAnchors.push(mid(mcp, fingerPips[index]));
+        hoodAnchors.push(moveToward(mcp, fingerPips[index], 0.22));
+    });
+
+    for (let i = 0; i < fingerMcps.length - 1; i++) {
+        const gap = mid(fingerMcps[i], fingerMcps[i + 1]);
+        const target = moveToward(gap, mid(fingerPips[i], fingerPips[i + 1]), 0.22);
+        drawBipennateDorsalInterosseous(ctx, {
+            baseA: estimateMetacarpalBase(wrist, fingerMcps[i], 0.40),
+            baseB: estimateMetacarpalBase(wrist, fingerMcps[i + 1], 0.40),
+            insertion: target,
+            scale,
+            alpha: lowConfidence ? 0.30 : 0.50,
+        });
+    }
+
+    drawExtensorTendonPath(ctx, [
+        moveToward(wrist, thumbCmc, 0.18),
+        moveToward(thumbCmc, thumbMcp, 0.10),
+        thumbMcp,
+        thumbIp,
+        thumbTip,
+    ], scale, { thumb: true, alpha: lowConfidence ? 0.44 : 0.64 });
+    drawExtensorTendonPath(ctx, [
+        moveToward(wrist, thumbCmc, 0.10),
+        thumbCmc,
+        thumbMcp,
+    ], scale, { thumb: true, alpha: lowConfidence ? 0.38 : 0.56 });
+    drawExtensorTendonPath(ctx, [
+        moveToward(wrist, thumbCmc, 0.02),
+        moveToward(wrist, thumbCmc, 0.30),
+        thumbCmc,
+    ], scale, { thumb: true, alpha: lowConfidence ? 0.34 : 0.48 });
+
+    labels.push(
+        { text: 'Extensor digitorum tendons', point: averagePoints(tendonLabelAnchors), priority: 1, preferredSide: -1 },
+        { text: 'Dorsal interossei', point: dorsalPalm, priority: 2 },
+        { text: 'Extensor expansion / extensor hood', point: averagePoints(hoodAnchors), priority: 3 },
+        { text: 'Extensor pollicis longus tendon', point: mid(thumbMcp, thumbIp), priority: 4, preferredSide: 1 },
+        { text: 'Extensor pollicis brevis tendon', point: mid(thumbCmc, thumbMcp), priority: 5, preferredSide: 1 },
+        { text: 'Abductor pollicis longus tendon', point: moveToward(wrist, thumbCmc, 0.35), priority: 6, preferredSide: 1 },
+    );
+    if (lowConfidence) {
+        labels.push({ text: 'Low confidence - simplified overlay', point: dorsalPalm, priority: 0 });
+    }
+}
+
+function drawExtensorTendonPath(ctx, points, scale, options = {}) {
+    if (points.length < 2) return;
+    const palmWidth = options.palmWidth ?? 120;
+    const baseWidth = options.thumb
+        ? clamp(palmWidth * 0.038, 4.1 * scale, 7.4 * scale)
+        : clamp(palmWidth * 0.031, 3.4 * scale, 6.2 * scale);
+    const samples = sampleBezierSpline(points, 9);
+    const widthProfile = createDorsalTendonWidthProfile(samples.length, baseWidth, options.thumb);
+
+    ctx.save();
+    ctx.globalAlpha *= options.alpha ?? 0.72;
+    drawTendonRibbon(ctx, samples, widthProfile.map(width => width + 1.9 * scale), {
+        fill: 'rgba(48, 52, 52, 0.14)',
+        offset: { x: 0.45 * scale, y: 0.7 * scale },
+    });
+    drawTendonRibbon(ctx, samples, widthProfile, {
+        fill: 'rgba(224, 228, 220, 0.58)',
+        stroke: 'rgba(126, 136, 132, 0.18)',
+        lineWidth: 0.38 * scale,
+    });
+    drawTendonRibbon(ctx, samples, widthProfile.map(width => Math.max(0.85 * scale, width * 0.34)), {
+        fill: 'rgba(255, 255, 246, 0.24)',
+    });
+    drawTendonEdgeContour(ctx, samples, widthProfile, 'rgba(76, 84, 84, 0.12)', 0.28 * scale);
+    drawTendonCenterHighlight(ctx, samples, Math.max(0.34, baseWidth * 0.035), 'rgba(255, 255, 248, 0.10)');
+    ctx.restore();
+}
+
+function createDorsalTendonWidthProfile(count, baseWidth, isThumb = false) {
+    const widths = [];
+    for (let index = 0; index < count; index++) {
+        const t = count <= 1 ? 0 : index / (count - 1);
+        const wristTaper = Math.min(1, t / 0.16) * 0.18;
+        const mcpFan = Math.exp(-((t - 0.54) ** 2) / 0.030) * 0.16;
+        const distalTaper = isThumb ? 1 - t * 0.34 : 1 - t * 0.46;
+        widths.push(Math.max(baseWidth * 0.24, baseWidth * (distalTaper + wristTaper + mcpFan)));
+    }
+    return widths;
+}
+
+function drawExtensorHood(ctx, mcp, pip, scale, alpha) {
+    const center = moveToward(mcp, pip, 0.22);
+    const dx = pip.x - mcp.x;
+    const dy = pip.y - mcp.y;
+    const len = Math.max(1, Math.hypot(dx, dy));
+    const ux = dx / len;
+    const uy = dy / len;
+    const nx = -uy;
+    const ny = ux;
+    const hoodLength = 12 * scale;
+    const hoodWidth = 5.8 * scale;
+
+    ctx.save();
+    ctx.globalAlpha *= alpha;
+    ctx.fillStyle = 'rgba(246, 242, 236, 0.34)';
+    ctx.strokeStyle = 'rgba(255, 255, 250, 0.56)';
+    ctx.lineWidth = Math.max(0.65, 0.75 * scale);
+    ctx.beginPath();
+    ctx.moveTo(center.x - ux * hoodLength * 0.50, center.y - uy * hoodLength * 0.50);
+    ctx.quadraticCurveTo(
+        center.x + nx * hoodWidth,
+        center.y + ny * hoodWidth,
+        center.x + ux * hoodLength * 0.35,
+        center.y + uy * hoodLength * 0.35
+    );
+    ctx.quadraticCurveTo(
+        center.x - nx * hoodWidth,
+        center.y - ny * hoodWidth,
+        center.x - ux * hoodLength * 0.50,
+        center.y - uy * hoodLength * 0.50
+    );
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Three fine fascicle marks make the expansion read as a dorsal hood rather
+    // than a single opaque leaf, while remaining subtle enough for live video.
+    ctx.globalAlpha *= 0.56;
+    ctx.strokeStyle = 'rgba(224, 229, 220, 0.52)';
+    ctx.lineWidth = Math.max(0.34, 0.42 * scale);
+    [-0.46, 0, 0.46].forEach((spread) => {
+        ctx.beginPath();
+        ctx.moveTo(
+            center.x - ux * hoodLength * 0.36,
+            center.y - uy * hoodLength * 0.36
+        );
+        ctx.quadraticCurveTo(
+            center.x + nx * hoodWidth * spread,
+            center.y + ny * hoodWidth * spread,
+            center.x + ux * hoodLength * 0.30 + nx * hoodWidth * spread * 0.32,
+            center.y + uy * hoodLength * 0.30 + ny * hoodWidth * spread * 0.32
+        );
+        ctx.stroke();
+    });
+    ctx.restore();
+}
+
+function drawBipennateDorsalInterosseous(ctx, { baseA, baseB, insertion, scale, alpha }) {
+    const sharedBelly = moveToward(mid(baseA, baseB), insertion, 0.48);
+    const axis = normalizeVector({
+        x: insertion.x - sharedBelly.x,
+        y: insertion.y - sharedBelly.y,
+    }, { x: 0, y: -1 });
+    const normal = perpendicularVector(axis);
+    const halfGap = Math.min(10 * scale, dist(baseA, baseB) * 0.22);
+    const headAControl = movePoint(moveToward(baseA, sharedBelly, 0.58), normal, halfGap * 0.58);
+    const headBControl = movePoint(moveToward(baseB, sharedBelly, 0.58), normal, -halfGap * 0.58);
+    const convergence = moveToward(sharedBelly, insertion, 0.18);
+
+    ctx.save();
+    ctx.globalAlpha *= alpha;
+    drawIntrinsicMuscleRibbon(ctx, [baseA, headAControl, convergence], {
+        startWidth: Math.max(1.4, 2.2 * scale),
+        midWidth: Math.max(4.7, 6.3 * scale),
+        endWidth: Math.max(1.25, 1.8 * scale),
+        alpha: 0.92,
+        tone: 'deep',
+    });
+    drawIntrinsicMuscleRibbon(ctx, [baseB, headBControl, convergence], {
+        startWidth: Math.max(1.4, 2.2 * scale),
+        midWidth: Math.max(4.7, 6.3 * scale),
+        endWidth: Math.max(1.25, 1.8 * scale),
+        alpha: 0.82,
+        tone: 'deep',
+    });
+    ctx.globalAlpha *= 0.70;
+    ctx.strokeStyle = 'rgba(242, 167, 150, 0.32)';
+    ctx.lineCap = 'round';
+    ctx.lineWidth = Math.max(0.45, 0.65 * scale);
+    ctx.beginPath();
+    ctx.moveTo(sharedBelly.x, sharedBelly.y);
+    ctx.quadraticCurveTo(
+        moveToward(sharedBelly, insertion, 0.52).x,
+        moveToward(sharedBelly, insertion, 0.52).y,
+        insertion.x,
+        insertion.y
+    );
+    ctx.stroke();
+    ctx.restore();
+    return sharedBelly;
+}
+
+function drawSmoothPolyline(ctx, points) {
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length - 1; i++) {
+        const control = points[i];
+        const next = mid(points[i], points[i + 1]);
+        ctx.quadraticCurveTo(control.x, control.y, next.x, next.y);
+    }
+    const last = points[points.length - 1];
+    ctx.lineTo(last.x, last.y);
+}
+
+function drawMuscleLabels(ctx, labels, labelMode, bounds, anatomyAvoidRegion = null) {
+    if (labelMode === 'off') return;
+    const groupedPriority = new Map([
+        ['Flexor tendon paths', 1],
+        ['Extensor tendon paths', 1],
+        ['Thenar muscles', 2],
+        ['Hypothenar muscles', 3],
+        ['Lumbricals', 4],
+        ['Palmar interossei', 5],
+        ['Dorsal interossei', 5],
+        ['Extensor digitorum tendons', 6],
+        ['Extensor pollicis tendon', 7],
+        ['Extensor hood', 8],
+        ['Extensor expansion / extensor hood', 8],
+        ['Low confidence - simplified overlay', 1],
+    ]);
+    const groupedLabels = labels
+        .filter(label => groupedPriority.has(label.text))
+        .map(label => ({ ...label, priority: groupedPriority.get(label.text) ?? label.priority }));
+    const detailLabels = labels
+        .filter(label => !groupedPriority.has(label.text))
+        .map(label => ({ ...label, priority: (label.priority ?? 9) + 30 }));
+    const visibleLabels = labelMode === 'detailed'
+        ? [...groupedLabels, ...detailLabels]
+        : groupedLabels;
+    const labelPoints = visibleLabels.map(label => label.point).filter(Boolean);
+    const avoidRegion = anatomyAvoidRegion || getLabelAvoidRegion(labelPoints, bounds);
+    drawSmartLabels(ctx, visibleLabels.filter(label => label.point), bounds, {
+        maxLabels: labelMode === 'detailed' ? 6 : 5,
+        theme: 'medical',
+        keepLeadersShort: true,
+        outwardFromCenter: true,
+        avoidRegion,
+    });
+}
+
+function createMuscleLabelAvoidRegion({ wrist, thumbCmc, fingerMcps, fingerPips, palmWidth, bounds }) {
+    const points = [
+        wrist,
+        thumbCmc,
+        ...fingerMcps,
+        ...fingerPips.map((pip, index) => moveToward(fingerMcps[index], pip, 0.34)),
+    ];
+    const padX = Math.max(42, palmWidth * 0.24);
+    const padY = Math.max(30, palmWidth * 0.18);
+    const left = clamp(Math.min(...points.map(point => point.x)) - padX, bounds.left, bounds.right);
+    const right = clamp(Math.max(...points.map(point => point.x)) + padX, bounds.left, bounds.right);
+    const top = clamp(Math.min(...points.map(point => point.y)) - padY, bounds.top, bounds.bottom);
+    const bottom = clamp(Math.max(...points.map(point => point.y)) + padY, bounds.top, bounds.bottom);
+    return {
+        left,
+        right,
+        top,
+        bottom,
+        centerX: (left + right) / 2,
+    };
+}
+
+function getLabelAvoidRegion(points, bounds) {
+    if (!points.length) return null;
+    const xs = points.map(point => point.x);
+    const ys = points.map(point => point.y);
+    const padX = 54;
+    const padY = 38;
+    return {
+        left: clamp(Math.min(...xs) - padX, bounds.left, bounds.right),
+        right: clamp(Math.max(...xs) + padX, bounds.left, bounds.right),
+        top: clamp(Math.min(...ys) - padY, bounds.top, bounds.bottom),
+        bottom: clamp(Math.max(...ys) + padY, bounds.top, bounds.bottom),
+        centerX: xs.reduce((sum, x) => sum + x, 0) / xs.length,
+    };
+}
+
+export function drawStylizedHandBones(ctx, landmarks, w, h, options = {}) {
     const p = (i) => ({ x: landmarks[i].x * w, y: landmarks[i].y * h });
+    const wrist = p(HAND.WRIST);
+    const thumbCmc = p(HAND.THUMB_CMC);
+    const thumbMcp = p(HAND.THUMB_MCP);
+    const thumbIp = p(HAND.THUMB_IP);
+    const thumbTip = p(HAND.THUMB_TIP);
+    const indexMcp = p(HAND.INDEX_MCP);
+    const middleMcp = p(HAND.MIDDLE_MCP);
+    const ringMcp = p(HAND.RING_MCP);
+    const pinkyMcp = p(HAND.PINKY_MCP);
+    const palmWidth = Math.max(24, dist(indexMcp, pinkyMcp));
+    const palmLength = Math.max(32, dist(wrist, middleMcp));
+    const scale = clamp((palmWidth + palmLength) / 210, 0.62, 1.55);
+    const bones = [];
+    const labelAnchors = {};
+    const labelMode = options.labelMode || 'off';
+    const effectiveLabelMode = options.isUncertain && labelMode === 'detailed' ? 'clean' : labelMode;
+    const wristMode = options.wristMode || 'simple';
+    const bounds = options.visibleBounds || {
+        left: 18,
+        top: 18,
+        right: w - 18,
+        bottom: h - 18,
+    };
 
-    // ── Draw phalanges (finger bones) ──
-    // Each finger segment is a proper bone shape
-    // Separate bone lists so we can size each row differently
-    const proximalBones = [
-        [HAND.INDEX_MCP,  HAND.INDEX_PIP],
-        [HAND.MIDDLE_MCP, HAND.MIDDLE_PIP],
-        [HAND.RING_MCP,   HAND.RING_PIP],
-        [HAND.PINKY_MCP,  HAND.PINKY_PIP],
-        [HAND.THUMB_MCP,  HAND.THUMB_IP],
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+
+    // Educational wrist model:
+    // - Uses visible wrist/thumb/pinky/MCP landmarks to estimate radial (thumb)
+    //   and ulnar (pinky) sides, so left/right hands mirror naturally.
+    // - The webcam image may be visually mirrored, but these coordinates are
+    //   already in displayed video space; carpal placement follows the visible
+    //   thumb side rather than the handedness text.
+    // - These are approximate teaching anchors, not actual X-ray bone detection.
+    const carpalInfo = createCarpalLayout({
+        wrist,
+        thumbCmc,
+        indexMcp,
+        middleMcp,
+        ringMcp,
+        pinkyMcp,
+        scale,
+    });
+    const metacarpalBases = createMetacarpalBaseAnchors(carpalInfo, {
+        thumbCmc,
+        thumbMcp,
+        indexMcp,
+        middleMcp,
+        ringMcp,
+        pinkyMcp,
+    });
+    // The source video has clear articular material between the individual bones.
+    // These are visual teaching surfaces inferred from landmark connections, not
+    // cartilage detected through skin. Drawing them first lets the bone ends frame
+    // the joint space instead of turning the skeleton into a bead-and-line rig.
+    const articulations = createHandArticulations({
+        carpalInfo,
+        metacarpalBases,
+        thumbMcp,
+        thumbIp,
+        thumbTip,
+        indexChain: [indexMcp, p(HAND.INDEX_PIP), p(HAND.INDEX_DIP), p(HAND.INDEX_TIP)],
+        middleChain: [middleMcp, p(HAND.MIDDLE_PIP), p(HAND.MIDDLE_DIP), p(HAND.MIDDLE_TIP)],
+        ringChain: [ringMcp, p(HAND.RING_PIP), p(HAND.RING_DIP), p(HAND.RING_TIP)],
+        pinkyChain: [pinkyMcp, p(HAND.PINKY_PIP), p(HAND.PINKY_DIP), p(HAND.PINKY_TIP)],
+        scale,
+    });
+    drawCarpalArticularSeams(ctx, carpalInfo);
+    drawArticularSurfaces(ctx, articulations);
+    carpalInfo.bones.forEach((carpal) => {
+        drawCarpalAnatomyNode(ctx, carpal);
+        bones.push({
+            type: 'node',
+            id: `carpal-${carpal.id}`,
+            name: carpal.name,
+            label: carpal.name,
+            group: 'Carpal bone',
+            finger: 'Wrist',
+            segment: 'carpal bone',
+            center: carpal.center,
+            radius: Math.max(carpal.rx, carpal.ry) + 9,
+            labelPoint: carpal.center,
+            location: carpal.location,
+            explanation: `${carpal.name} is shown in an approximate educational wrist position based on visible hand landmarks.`,
+        });
+    });
+    bones.push({
+        type: 'node',
+        id: 'carpals',
+        name: 'Carpals',
+        group: 'Wrist / carpal bones',
+        finger: 'Wrist',
+        segment: 'carpal cluster',
+        center: carpalInfo.center,
+        radius: carpalInfo.radius,
+        label: 'Carpals',
+        location: 'base of the hand near the wrist',
+        explanation: 'A simplified educational cluster for the small wrist bones near the base of the hand.',
+    });
+    labelAnchors.carpals = carpalInfo.center;
+    labelAnchors.carpalBones = carpalInfo.bones;
+
+    // Educational landmark-to-bone mapping:
+    // - Thumb metacarpal uses landmark 1 -> 2 (CMC/base to MCP).
+    // - Thumb has only proximal and distal phalanges, so no middle phalanx is drawn.
+    // - Each metacarpal leaves a matching distal-row carpal instead of fanning from
+    //   one wrist point: trapezium -> thumb, trapezoid -> index, capitate -> middle,
+    //   and hamate -> ring/pinky. The visible landmarks still determine the final
+    //   alignment; this only improves the educational palm-base silhouette.
+    // - Carpals are a simple cluster, not an X-ray-accurate diagnosis.
+    addBone({
+        id: 'thumb-metacarpal',
+        name: 'Thumb metacarpal / 1st metacarpal',
+        label: 'Thumb: 1st metacarpal',
+        group: 'Metacarpal',
+        finger: 'Thumb',
+        segment: 'metacarpal',
+        from: metacarpalBases.thumb,
+        to: thumbMcp,
+        start: 10.1,
+        end: 12.8,
+        midScale: 1.04,
+        alpha: 0.78,
+    });
+    [
+        ['index-metacarpal', 'Index metacarpal / 2nd metacarpal', 'Index: 2nd metacarpal', 'Index', metacarpalBases.index, indexMcp, 10.0, 13.0],
+        ['middle-metacarpal', 'Middle metacarpal / 3rd metacarpal', 'Middle: 3rd metacarpal', 'Middle', metacarpalBases.middle, middleMcp, 10.8, 14.2],
+        ['ring-metacarpal', 'Ring metacarpal / 4th metacarpal', 'Ring: 4th metacarpal', 'Ring', metacarpalBases.ring, ringMcp, 10.1, 13.1],
+        ['pinky-metacarpal', 'Pinky metacarpal / 5th metacarpal', 'Pinky: 5th metacarpal', 'Pinky', metacarpalBases.pinky, pinkyMcp, 9.2, 11.8],
+    ].forEach(([id, name, label, finger, from, to, start, end]) => addBone({
+        id,
+        name,
+        label,
+        group: 'Metacarpal',
+        finger,
+        segment: 'metacarpal',
+        from,
+        to,
+        start,
+        end,
+        midScale: 1.04,
+        alpha: 0.78,
+    }));
+    labelAnchors.metacarpals = mid(indexMcp, ringMcp);
+
+    addBone({
+        id: 'thumb-proximal-phalanx',
+        name: 'Thumb: proximal phalanx',
+        label: 'Thumb: proximal phalanx',
+        group: 'Phalanx',
+        finger: 'Thumb',
+        segment: 'proximal phalanx',
+        from: thumbMcp,
+        to: thumbIp,
+        start: 9.6,
+        end: 8.0,
+        midScale: 1.04,
+    });
+    addBone({
+        id: 'thumb-distal-phalanx',
+        name: 'Thumb: distal phalanx',
+        label: 'Thumb: distal phalanx',
+        group: 'Phalanx',
+        finger: 'Thumb',
+        segment: 'distal phalanx',
+        from: thumbIp,
+        to: thumbTip,
+        start: 7.7,
+        end: 6.0,
+        midScale: 1.02,
+    });
+    labelAnchors.thumbMetacarpal = mid(thumbCmc, thumbMcp);
+    labelAnchors.thumbProximal = mid(thumbMcp, thumbIp);
+    labelAnchors.thumbDistal = mid(thumbIp, thumbTip);
+
+    drawFingerBones('index', 'Index', [HAND.INDEX_MCP, HAND.INDEX_PIP, HAND.INDEX_DIP, HAND.INDEX_TIP], 1);
+    drawFingerBones('middle', 'Middle', [HAND.MIDDLE_MCP, HAND.MIDDLE_PIP, HAND.MIDDLE_DIP, HAND.MIDDLE_TIP], 1);
+    drawFingerBones('ring', 'Ring', [HAND.RING_MCP, HAND.RING_PIP, HAND.RING_DIP, HAND.RING_TIP], 1);
+    drawFingerBones('pinky', 'Pinky', [HAND.PINKY_MCP, HAND.PINKY_PIP, HAND.PINKY_DIP, HAND.PINKY_TIP], 0.9);
+    labelAnchors.proximal = mid(p(HAND.MIDDLE_MCP), p(HAND.MIDDLE_PIP));
+    labelAnchors.middle = mid(p(HAND.INDEX_PIP), p(HAND.INDEX_DIP));
+    labelAnchors.distal = mid(p(HAND.RING_DIP), p(HAND.RING_TIP));
+
+    // The expanded articular ends of adjacent bone silhouettes define the joints.
+    // No generic glowing nodes are added here: they made the hand look like a rig
+    // rather than an anatomical skeleton and obscured the natural joint spaces.
+
+    drawBoneLabels(ctx, bones, labelAnchors, effectiveLabelMode, bounds);
+    drawWristLabels(ctx, bones, labelAnchors, wristMode, bounds);
+
+    ctx.restore();
+    return { bones, articulations };
+
+    function drawFingerBones(idPrefix, finger, chain, widthFactor = 1) {
+        const widths = [[9.2, 7.8], [7.5, 6.3], [6.1, 5.1]];
+        const segments = ['proximal phalanx', 'middle phalanx', 'distal phalanx'];
+        for (let i = 0; i < chain.length - 1; i++) {
+            const [start, end] = widths[i] || widths[widths.length - 1];
+            addBone({
+                id: `${idPrefix}-${segments[i].replaceAll(' ', '-')}`,
+                name: `${finger}: ${segments[i]}`,
+                label: `${finger}: ${segments[i]}`,
+                group: 'Phalanx',
+                finger,
+                segment: segments[i],
+                from: p(chain[i]),
+                to: p(chain[i + 1]),
+                start: start * widthFactor,
+                end: end * widthFactor,
+                midScale: i === 0 ? 1.04 : 1.02,
+            });
+        }
+    }
+
+    function addBone({ id, name, label, group, finger, segment, from, to, start, end, midScale = 1.12, alpha = 0.82 }) {
+        const startWidth = start * scale;
+        const endWidth = end * scale;
+        drawRealisticBoneSegment(ctx, from, to, {
+            startWidth,
+            endWidth,
+            midScale,
+            alpha,
+            boneType: getBoneRenderType(finger, segment, group),
+        });
+        const labelPoint = mid(from, to);
+        labelAnchors[id] = labelPoint;
+        bones.push({
+            type: 'segment',
+            id,
+            name,
+            label: label || name,
+            group,
+            finger,
+            segment,
+            from,
+            to,
+            labelPoint,
+            radius: Math.max(startWidth, endWidth) * Math.max(midScale, 1) + 10,
+            location: describeBoneLocation(finger, segment, id),
+            explanation: describeBone(finger, segment, group),
+        });
+    }
+}
+
+function estimateMetacarpalBase(wrist, mcp, amount) {
+    return {
+        x: wrist.x + (mcp.x - wrist.x) * amount,
+        y: wrist.y + (mcp.y - wrist.y) * amount,
+    };
+}
+
+function createMetacarpalBaseAnchors(carpalInfo, landmarks) {
+    const carpalsById = new Map(carpalInfo.bones.map((carpal) => [carpal.id, carpal]));
+
+    // The detector cannot see a carpal-metacarpal joint through the palm. These
+    // anchors therefore use the visible MCP rays to leave the appropriate distal
+    // carpal, keeping the palm structured without pretending to be an X-ray.
+    function leaveCarpal(carpalId, mcp) {
+        const carpal = carpalsById.get(carpalId);
+        if (!carpal) return mcp;
+        const dx = mcp.x - carpal.center.x;
+        const dy = mcp.y - carpal.center.y;
+        const length = Math.hypot(dx, dy);
+        if (length < 0.001) return carpal.center;
+        const outerRadius = Math.max(carpal.rx, carpal.ry);
+        const exitDistance = Math.min(length * 0.24, outerRadius * 0.92 + length * 0.065);
+        return {
+            x: carpal.center.x + dx / length * exitDistance,
+            y: carpal.center.y + dy / length * exitDistance,
+        };
+    }
+
+    const thumbCarpalExit = leaveCarpal('trapezium', landmarks.thumbMcp);
+    return {
+        // The thumb CMC landmark remains part of the anchor to keep the first
+        // metacarpal locked to the tracked thumb while visually joining trapezium.
+        thumb: moveToward(landmarks.thumbCmc, thumbCarpalExit, 0.48),
+        index: leaveCarpal('trapezoid', landmarks.indexMcp),
+        middle: leaveCarpal('capitate', landmarks.middleMcp),
+        ring: leaveCarpal('hamate', landmarks.ringMcp),
+        pinky: leaveCarpal('hamate', landmarks.pinkyMcp),
+    };
+}
+
+function createHandArticulations({
+    carpalInfo,
+    metacarpalBases,
+    thumbMcp,
+    thumbIp,
+    thumbTip,
+    indexChain,
+    middleChain,
+    ringChain,
+    pinkyChain,
+    scale,
+}) {
+    const carpalById = new Map(carpalInfo.bones.map((carpal) => [carpal.id, carpal]));
+    const articulations = [];
+
+    function addArticulation(id, parent, joint, child, type, size = 1) {
+        if (!parent || !joint || !child) return;
+        const outgoing = normalizeVector({ x: child.x - joint.x, y: child.y - joint.y }, { x: 0, y: -1 });
+        const incoming = normalizeVector({ x: joint.x - parent.x, y: joint.y - parent.y }, outgoing);
+        const axis = normalizeVector({ x: incoming.x + outgoing.x, y: incoming.y + outgoing.y }, outgoing);
+        const dimensions = getArticulationDimensions(type, scale, size);
+        articulations.push({
+            id,
+            center: joint,
+            axis,
+            type,
+            ...dimensions,
+        });
+    }
+
+    function addFingerArticulations(prefix, carpalId, base, chain) {
+        const [mcp, pip, dip, tip] = chain;
+        const carpal = carpalById.get(carpalId);
+        addArticulation(`${prefix}-cmc`, carpal?.center, base, mcp, 'cmc', prefix === 'pinky' ? 0.86 : 1);
+        addArticulation(`${prefix}-mcp`, base, mcp, pip, 'mcp', prefix === 'pinky' ? 0.88 : 1);
+        addArticulation(`${prefix}-pip`, mcp, pip, dip, 'pip', prefix === 'pinky' ? 0.86 : 1);
+        addArticulation(`${prefix}-dip`, pip, dip, tip, 'dip', prefix === 'pinky' ? 0.84 : 1);
+    }
+
+    const trapezium = carpalById.get('trapezium');
+    addArticulation('thumb-cmc', trapezium?.center, metacarpalBases.thumb, thumbMcp, 'thumb-cmc', 1);
+    addArticulation('thumb-mcp', metacarpalBases.thumb, thumbMcp, thumbIp, 'thumb-mcp', 1);
+    addArticulation('thumb-ip', thumbMcp, thumbIp, thumbTip, 'thumb-ip', 1);
+    addFingerArticulations('index', 'trapezoid', metacarpalBases.index, indexChain);
+    addFingerArticulations('middle', 'capitate', metacarpalBases.middle, middleChain);
+    addFingerArticulations('ring', 'hamate', metacarpalBases.ring, ringChain);
+    addFingerArticulations('pinky', 'hamate', metacarpalBases.pinky, pinkyChain);
+    return articulations;
+}
+
+function getArticulationDimensions(type, scale, size) {
+    const dimensions = {
+        cmc: { across: 8.2, along: 2.8 },
+        mcp: { across: 8.9, along: 2.9 },
+        pip: { across: 6.7, along: 2.25 },
+        dip: { across: 5.3, along: 1.85 },
+        'thumb-cmc': { across: 9.3, along: 3.2 },
+        'thumb-mcp': { across: 8.3, along: 2.8 },
+        'thumb-ip': { across: 6.5, along: 2.15 },
+    };
+    const preset = dimensions[type] || dimensions.pip;
+    return {
+        across: preset.across * scale * size,
+        along: preset.along * scale * size,
+    };
+}
+
+function drawArticularSurfaces(ctx, articulations) {
+    const baseAlpha = ctx.globalAlpha;
+    articulations.forEach((articulation) => {
+        const { center, axis, across, along } = articulation;
+        const angle = Math.atan2(axis.y, axis.x);
+        ctx.save();
+        ctx.translate(center.x, center.y);
+        ctx.rotate(angle);
+
+        ctx.globalAlpha = baseAlpha * 0.46;
+        ctx.shadowColor = XRAY_ARTICULAR_PALETTE.shadow;
+        ctx.shadowBlur = across * 0.55;
+        ctx.shadowOffsetY = along * 0.42;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, along * 1.30, across * 1.12, 0, 0, Math.PI * 2);
+        ctx.fillStyle = XRAY_ARTICULAR_PALETTE.shadow;
+        ctx.fill();
+
+        ctx.shadowBlur = 0;
+        ctx.globalAlpha = baseAlpha * 0.64;
+        const surface = ctx.createLinearGradient(-along, -across, along, across);
+        surface.addColorStop(0, XRAY_ARTICULAR_PALETTE.edge);
+        surface.addColorStop(0.38, XRAY_ARTICULAR_PALETTE.surface);
+        surface.addColorStop(0.62, XRAY_ARTICULAR_PALETTE.light);
+        surface.addColorStop(1, XRAY_ARTICULAR_PALETTE.edge);
+        ctx.beginPath();
+        ctx.ellipse(0, 0, along, across, 0, 0, Math.PI * 2);
+        ctx.fillStyle = surface;
+        ctx.fill();
+
+        ctx.globalAlpha = baseAlpha * 0.50;
+        ctx.strokeStyle = XRAY_ARTICULAR_PALETTE.highlight;
+        ctx.lineWidth = Math.max(0.45, along * 0.34);
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(-along * 0.48, -across * 0.22);
+        ctx.quadraticCurveTo(0, -across * 0.46, along * 0.48, -across * 0.14);
+        ctx.stroke();
+        ctx.restore();
+    });
+}
+
+function drawCarpalArticularSeams(ctx, carpalInfo) {
+    const byId = new Map(carpalInfo.bones.map((carpal) => [carpal.id, carpal]));
+    const pairs = [
+        ['scaphoid', 'lunate'], ['lunate', 'triquetrum'], ['triquetrum', 'pisiform'],
+        ['trapezium', 'trapezoid'], ['trapezoid', 'capitate'], ['capitate', 'hamate'],
+        ['scaphoid', 'trapezium'], ['scaphoid', 'trapezoid'], ['lunate', 'capitate'], ['triquetrum', 'hamate'],
     ];
-    const middleBones = [
-        [HAND.INDEX_PIP,  HAND.INDEX_DIP],
-        [HAND.MIDDLE_PIP, HAND.MIDDLE_DIP],
-        [HAND.RING_PIP,   HAND.RING_DIP],
-        [HAND.PINKY_PIP,  HAND.PINKY_DIP],
-    ];
-    const distalBones = [
-        [HAND.INDEX_DIP,  HAND.INDEX_TIP],
-        [HAND.MIDDLE_DIP, HAND.MIDDLE_TIP],
-        [HAND.RING_DIP,   HAND.RING_TIP],
-        [HAND.PINKY_DIP,  HAND.PINKY_TIP],
-        [HAND.THUMB_IP,   HAND.THUMB_TIP],
+    const baseAlpha = ctx.globalAlpha;
+    ctx.save();
+    ctx.lineCap = 'round';
+    pairs.forEach(([fromId, toId]) => {
+        const from = byId.get(fromId);
+        const to = byId.get(toId);
+        if (!from || !to) return;
+        const dx = to.center.x - from.center.x;
+        const dy = to.center.y - from.center.y;
+        const length = Math.hypot(dx, dy);
+        if (length < 0.001) return;
+        const ux = dx / length;
+        const uy = dy / length;
+        const fromRadius = Math.max(from.rx, from.ry);
+        const toRadius = Math.max(to.rx, to.ry);
+        const start = {
+            x: from.center.x + ux * Math.min(length * 0.34, fromRadius * 0.72),
+            y: from.center.y + uy * Math.min(length * 0.34, fromRadius * 0.72),
+        };
+        const end = {
+            x: to.center.x - ux * Math.min(length * 0.34, toRadius * 0.72),
+            y: to.center.y - uy * Math.min(length * 0.34, toRadius * 0.72),
+        };
+        const seamWidth = Math.max(1.2, Math.min(fromRadius, toRadius) * 0.46);
+        ctx.globalAlpha = baseAlpha * 0.52;
+        ctx.shadowColor = XRAY_ARTICULAR_PALETTE.shadow;
+        ctx.shadowBlur = seamWidth * 0.65;
+        ctx.strokeStyle = XRAY_ARTICULAR_PALETTE.edge;
+        ctx.lineWidth = seamWidth;
+        ctx.beginPath();
+        ctx.moveTo(start.x, start.y);
+        ctx.lineTo(end.x, end.y);
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+        ctx.globalAlpha = baseAlpha * 0.44;
+        ctx.strokeStyle = XRAY_ARTICULAR_PALETTE.highlight;
+        ctx.lineWidth = Math.max(0.45, seamWidth * 0.28);
+        ctx.beginPath();
+        ctx.moveTo(start.x, start.y);
+        ctx.lineTo(end.x, end.y);
+        ctx.stroke();
+    });
+    ctx.restore();
+}
+
+function getBoneRenderType(finger, segment, group) {
+    if (finger === 'Thumb') return segment === 'metacarpal' ? 'thumb-metacarpal' : 'thumb-phalanx';
+    if (group === 'Metacarpal') return 'metacarpal';
+    if (segment === 'proximal phalanx') return 'proximal';
+    if (segment === 'middle phalanx') return 'middle';
+    if (segment === 'distal phalanx') return 'distal';
+    return 'phalanx';
+}
+
+function getRealisticBoneProfile(type) {
+    const profiles = {
+        metacarpal: {
+            shaftScale: 0.45,
+            waistLift: 0.014,
+            proximalBulge: 1.18,
+            distalBulge: 1.36,
+            proximalAsymmetry: 0.040,
+            distalAsymmetry: 0.065,
+            proximalLength: 0.15,
+            distalLength: 0.16,
+            irregularity: 0.030,
+            curve: 0.006,
+            inset: 0.034,
+            startCap: 0.22,
+            endCap: 0.28,
+            textureAlpha: 0.20,
+            textureCount: 14,
+            marrowAlpha: 0.27,
+            trabecularCount: 5,
+        },
+        'thumb-metacarpal': {
+            shaftScale: 0.44,
+            waistLift: 0.016,
+            proximalBulge: 1.28,
+            distalBulge: 1.34,
+            proximalAsymmetry: 0.060,
+            distalAsymmetry: 0.070,
+            proximalLength: 0.17,
+            distalLength: 0.16,
+            irregularity: 0.032,
+            curve: 0.012,
+            inset: 0.036,
+            startCap: 0.24,
+            endCap: 0.27,
+            textureAlpha: 0.20,
+            textureCount: 13,
+            marrowAlpha: 0.26,
+            trabecularCount: 5,
+        },
+        proximal: {
+            shaftScale: 0.43,
+            waistLift: 0.014,
+            proximalBulge: 1.42,
+            distalBulge: 1.30,
+            proximalAsymmetry: 0.055,
+            distalAsymmetry: 0.050,
+            proximalLength: 0.16,
+            distalLength: 0.15,
+            irregularity: 0.032,
+            curve: 0.007,
+            inset: 0.040,
+            startCap: 0.23,
+            endCap: 0.25,
+            textureAlpha: 0.19,
+            textureCount: 12,
+            marrowAlpha: 0.22,
+            trabecularCount: 4,
+        },
+        middle: {
+            shaftScale: 0.41,
+            waistLift: 0.012,
+            proximalBulge: 1.32,
+            distalBulge: 1.24,
+            proximalAsymmetry: 0.045,
+            distalAsymmetry: 0.042,
+            proximalLength: 0.15,
+            distalLength: 0.14,
+            irregularity: 0.030,
+            curve: 0.006,
+            inset: 0.042,
+            startCap: 0.21,
+            endCap: 0.23,
+            textureAlpha: 0.18,
+            textureCount: 10,
+            marrowAlpha: 0.20,
+            trabecularCount: 4,
+        },
+        distal: {
+            shaftScale: 0.39,
+            waistLift: 0.010,
+            proximalBulge: 1.28,
+            distalBulge: 1.34,
+            proximalAsymmetry: 0.040,
+            distalAsymmetry: 0.055,
+            proximalLength: 0.14,
+            distalLength: 0.20,
+            irregularity: 0.034,
+            curve: 0.005,
+            inset: 0.036,
+            startCap: 0.20,
+            endCap: 0.36,
+            textureAlpha: 0.17,
+            textureCount: 9,
+            marrowAlpha: 0.18,
+            trabecularCount: 3,
+        },
+        'thumb-phalanx': {
+            shaftScale: 0.43,
+            waistLift: 0.014,
+            proximalBulge: 1.36,
+            distalBulge: 1.28,
+            proximalAsymmetry: 0.055,
+            distalAsymmetry: 0.048,
+            proximalLength: 0.16,
+            distalLength: 0.15,
+            irregularity: 0.032,
+            curve: 0.010,
+            inset: 0.040,
+            startCap: 0.23,
+            endCap: 0.27,
+            textureAlpha: 0.18,
+            textureCount: 10,
+            marrowAlpha: 0.20,
+            trabecularCount: 4,
+        },
+    };
+    return profiles[type] || profiles.middle;
+}
+
+function describeBone(finger, segment, group) {
+    if (finger === 'Pinky' && segment === 'metacarpal') {
+        return 'Palm bone leading to the little finger.';
+    }
+    if (finger === 'Pinky' && segment === 'proximal phalanx') {
+        return 'First finger bone after the pinky knuckle.';
+    }
+    if (finger === 'Pinky' && segment === 'middle phalanx') {
+        return 'Middle segment of the little finger.';
+    }
+    if (finger === 'Pinky' && segment === 'distal phalanx') {
+        return 'Fingertip bone of the little finger.';
+    }
+    if (group === 'Metacarpal') {
+        return `${finger} palm bone connecting the wrist area to the base knuckle.`;
+    }
+    if (finger === 'Thumb') {
+        return `${finger} ${segment}; the thumb has proximal and distal phalanges only.`;
+    }
+    return `${finger} ${segment}; part of the visible finger chain estimated from hand landmarks.`;
+}
+
+function describeBoneLocation(finger, segment, id) {
+    if (id === 'pinky-metacarpal') return 'palm bone leading to the little finger';
+    if (finger === 'Pinky' && segment === 'proximal phalanx') return 'first finger bone after the knuckle';
+    if (finger === 'Pinky' && segment === 'middle phalanx') return 'middle segment of the little finger';
+    if (finger === 'Pinky' && segment === 'distal phalanx') return 'fingertip bone of the little finger';
+    if (segment === 'metacarpal') return `${finger.toLowerCase()} side of the palm`;
+    if (segment === 'proximal phalanx') return 'closest finger segment to the knuckle';
+    if (segment === 'middle phalanx') return 'middle finger segment';
+    if (segment === 'distal phalanx') return 'fingertip segment';
+    return 'estimated from visible hand landmarks';
+}
+
+function drawBoneLabels(ctx, bones, anchors, labelMode, bounds) {
+    if (labelMode === 'off') return;
+
+    const cleanLabels = [
+        { text: 'Distal phalanx', point: anchors.distal, priority: 1 },
+        { text: 'Middle phalanx', point: anchors.middle, priority: 2 },
+        { text: 'Proximal phalanx', point: anchors.proximal, priority: 3 },
+        { text: 'Metacarpals', point: anchors.metacarpals, priority: 4 },
     ];
 
-    const metacarpals = [
-        [HAND.WRIST, HAND.INDEX_MCP],
-        [HAND.WRIST, HAND.MIDDLE_MCP],
-        [HAND.WRIST, HAND.RING_MCP],
-        [HAND.WRIST, HAND.PINKY_MCP],
-        [HAND.WRIST, HAND.THUMB_CMC],
-        [HAND.THUMB_CMC, HAND.THUMB_MCP],
-    ];
+    const detailedIds = new Set([
+        'thumb-metacarpal',
+        'thumb-proximal-phalanx',
+        'thumb-distal-phalanx',
+        'index-metacarpal',
+        'index-proximal-phalanx',
+        'index-middle-phalanx',
+        'index-distal-phalanx',
+        'middle-metacarpal',
+        'middle-proximal-phalanx',
+        'middle-middle-phalanx',
+        'middle-distal-phalanx',
+        'ring-metacarpal',
+        'ring-proximal-phalanx',
+        'ring-middle-phalanx',
+        'ring-distal-phalanx',
+        'pinky-metacarpal',
+        'pinky-proximal-phalanx',
+        'pinky-middle-phalanx',
+        'pinky-distal-phalanx',
+    ]);
 
+    const labels = labelMode === 'detailed'
+        ? bones
+            .filter(bone => detailedIds.has(bone.id))
+            .map((bone) => ({
+                text: bone.label || bone.name,
+                point: bone.labelPoint,
+                priority: getDetailedLabelPriority(bone),
+            }))
+        : cleanLabels;
+
+    drawSmartLabels(ctx, labels.filter(label => label.point), bounds);
+}
+
+function drawWristLabels(ctx, bones, anchors, wristMode, bounds) {
+    if (wristMode === 'off') return;
+
+    if (wristMode === 'simple') {
+        drawSmartLabels(ctx, [
+            { text: 'Carpals', point: anchors.carpals, priority: 1 },
+        ].filter(label => label.point), bounds);
+        return;
+    }
+
+    const carpalLabels = bones
+        .filter(bone => bone.id?.startsWith('carpal-'))
+        .map((bone) => ({
+            text: bone.label || bone.name,
+            point: bone.labelPoint || bone.center,
+            target: bone.labelPoint || bone.center,
+            preferredSide: getCarpalLabelSide(bone),
+            priority: getCarpalLabelPriority(bone),
+        }));
+    drawSmartLabels(ctx, carpalLabels, bounds);
+}
+
+function getCarpalLabelSide(bone) {
+    if (['carpal-scaphoid', 'carpal-trapezium', 'carpal-trapezoid'].includes(bone.id)) return 1;
+    if (['carpal-triquetrum', 'carpal-pisiform', 'carpal-hamate'].includes(bone.id)) return -1;
+    return 0;
+}
+
+function getCarpalLabelPriority(bone) {
+    const priority = {
+        'carpal-scaphoid': 1,
+        'carpal-trapezium': 2,
+        'carpal-capitate': 3,
+        'carpal-hamate': 4,
+        'carpal-lunate': 5,
+        'carpal-triquetrum': 6,
+        'carpal-trapezoid': 7,
+        'carpal-pisiform': 8,
+    };
+    return priority[bone.id] ?? 9;
+}
+
+function getDetailedLabelPriority(bone) {
+    if (bone.finger === 'Pinky') return 1;
+    if (bone.finger === 'Thumb') return 2;
+    if (bone.segment === 'metacarpal') return 3;
+    return 5;
+}
+
+export function drawHandSkeleton(ctx, landmarks, w, h, options = {}) {
+    const model = createHandSkeletonModel(landmarks, w, h, options);
+    const mode = options.mode || ANATOMY_MODES.GROUPED;
+    const quizTargetId = options.quizTargetId;
+
+    ctx.globalAlpha = Math.max(0.35, model.confidence.score);
+    model.bones.forEach((bone) => {
+        const isQuizTarget = mode === ANATOMY_MODES.QUIZ && bone.id === quizTargetId;
+        if (bone.type === 'segment') {
+            drawTaperedCapsule(ctx, bone.from, bone.to, bone.startWidth, bone.endWidth, isQuizTarget);
+        } else if (bone.type === 'carpal') {
+            drawCarpalBone(ctx, bone.center, bone.rx, bone.ry, bone.angle, isQuizTarget);
+        } else {
+            drawKnuckle(ctx, bone.center, bone.radius || 7);
+        }
+    });
     ctx.globalAlpha = 1;
 
-    // Metacarpals — thick bones filling the palm
-    metacarpals.forEach(([a, b]) => drawRealBone(ctx, p(a), p(b), 24, 14));
+    if (options.showLabels !== false && mode !== ANATOMY_MODES.QUIZ) {
+        drawSmartLabels(ctx, getLabelsForMode(model, mode), options.visibleBounds);
+    }
+    if (mode === ANATOMY_MODES.DEBUG) {
+        drawDebugLandmarks(ctx, model);
+    }
+    return model;
+}
 
-    // Proximal phalanges — wide with prominent condyle ends
-    proximalBones.forEach(([a, b]) => drawRealBone(ctx, p(a), p(b), 22, 13));
+const XRAY_BONE_PALETTE = {
+    dropShadow: 'rgba(38, 44, 46, 0.30)',
+    castShadow: 'rgba(88, 96, 98, 0.22)',
+    edgeDark: 'rgba(126, 136, 138, 0.46)',
+    edgeMid: 'rgba(186, 194, 194, 0.58)',
+    fill: 'rgba(235, 238, 232, 0.74)',
+    center: 'rgba(248, 250, 247, 0.80)',
+    highlight: 'rgba(255, 255, 255, 0.84)',
+    axialShadow: 'rgba(92, 101, 104, 0.24)',
+    axialLight: 'rgba(255, 255, 255, 0.16)',
+    textureDark: 'rgba(90, 100, 104, 0.28)',
+    textureLight: 'rgba(255, 255, 255, 0.24)',
+    ridge: 'rgba(112, 122, 126, 0.26)',
+    marrow: 'rgba(92, 105, 108, 0.20)',
+    trabecular: 'rgba(114, 126, 128, 0.30)',
+    corticalHighlight: 'rgba(255, 255, 255, 0.34)',
+    outline: 'rgba(214, 222, 220, 0.56)',
+    outlineDark: 'rgba(118, 128, 132, 0.42)',
+    glow: 'rgba(84, 255, 220, 0.42)',
+};
 
-    // Middle phalanges
-    middleBones.forEach(([a, b]) => drawRealBone(ctx, p(a), p(b), 20, 12));
+// A muted blue-gray joint treatment separates neighboring bone silhouettes.
+// It is an anatomical illustration cue inspired by articular surfaces in the
+// reference, not a claim that the camera observes cartilage beneath the skin.
+const XRAY_ARTICULAR_PALETTE = {
+    shadow: 'rgba(44, 59, 70, 0.38)',
+    edge: 'rgba(93, 125, 146, 0.54)',
+    surface: 'rgba(142, 171, 190, 0.66)',
+    light: 'rgba(220, 233, 239, 0.72)',
+    highlight: 'rgba(241, 249, 252, 0.70)',
+};
 
-    // Distal phalanges — special paddle/tuft shape at fingertips
-    distalBones.forEach(([a, b]) => drawDistalPhalanx(ctx, p(a), p(b), 16, 12));
+function drawRealisticBoneSegment(ctx, a, b, options = {}) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 4) return;
 
-    // ── Carpal bones (wrist cluster) — already great, keep as-is ──
-    drawCarpalCluster(ctx, p(HAND.WRIST), landmarks, w, h);
+    const ux = dx / len;
+    const uy = dy / len;
+    const nx = -uy;
+    const ny = ux;
+    const startWidth = options.startWidth ?? 8;
+    const endWidth = options.endWidth ?? 5;
+    const alpha = options.alpha ?? 0.8;
+    const renderedAlpha = ctx.globalAlpha * alpha;
+    const profile = getRealisticBoneProfile(options.boneType);
+    const maxWidth = Math.max(startWidth, endWidth) * (options.midScale ?? 1.15);
+    const inset = Math.min(len * profile.inset, maxWidth * 0.42);
+    const start = { x: a.x + ux * inset, y: a.y + uy * inset };
+    const end = { x: b.x - ux * inset, y: b.y - uy * inset };
+    const innerDx = end.x - start.x;
+    const innerDy = end.y - start.y;
+    const seed = (a.x * 0.017 + a.y * 0.029 + b.x * 0.011 + b.y * 0.023) % 11;
+    const samples = 22;
 
-    // Joints are formed naturally by the wider condyle ends of adjacent bones
+    function centerAt(t) {
+        const curve = Math.sin(Math.PI * t) * len * profile.curve;
+        return {
+            x: start.x + innerDx * t + nx * curve,
+            y: start.y + innerDy * t + ny * curve,
+        };
+    }
 
-    drawLabel(ctx, 'Distal Phalanx', p(HAND.MIDDLE_TIP), '#00ff88');
-    drawLabel(ctx, 'Middle Phalanx', mid(p(HAND.INDEX_PIP), p(HAND.INDEX_DIP)), '#00ff88');
-    drawLabel(ctx, 'Proximal Phalanx', mid(p(HAND.RING_MCP), p(HAND.RING_PIP)), '#00ff88');
-    drawLabel(ctx, 'Metacarpals', mid(p(HAND.MIDDLE_MCP), p(HAND.WRIST)), '#00ff88');
-    drawLabel(ctx, 'Carpals', p(HAND.WRIST), '#00ff88');
+    function widthAt(t, side = 1, extra = 0) {
+        const shaftBase = startWidth + (endWidth - startWidth) * t;
+        const shaft = shaftBase * profile.shaftScale;
+        const proximal = startWidth * profile.proximalBulge * Math.exp(-((t / profile.proximalLength) ** 2));
+        const distal = endWidth * profile.distalBulge * Math.exp(-(((1 - t) / profile.distalLength) ** 2));
+        const waist = Math.sin(Math.PI * t) * maxWidth * profile.waistLift;
+        const natural = Math.max(shaft + waist, proximal, distal);
+        // Real joint heads are not perfectly symmetrical. A restrained side bias
+        // gives the widened ends a more organic condylar silhouette without moving
+        // the landmark-defined centerline that keeps the overlay aligned.
+        const proximalBias = side * startWidth * (profile.proximalAsymmetry ?? 0)
+            * Math.exp(-((t / profile.proximalLength) ** 2));
+        const distalBias = -side * endWidth * (profile.distalAsymmetry ?? 0)
+            * Math.exp(-(((1 - t) / profile.distalLength) ** 2));
+        const ripple = 1 + (
+            Math.sin(seed + t * 17.1 + side * 1.7) * 0.55
+            + Math.sin(seed * 1.9 + t * 31.3 + side * 2.4) * 0.25
+        ) * profile.irregularity;
+        return Math.max(1.5, natural * ripple + proximalBias + distalBias + extra);
+    }
+
+    function bonePath(extra = 0) {
+        const left = [];
+        const right = [];
+        for (let i = 0; i <= samples; i++) {
+            const t = i / samples;
+            const c = centerAt(t);
+            left.push({
+                x: c.x + nx * widthAt(t, 1, extra),
+                y: c.y + ny * widthAt(t, 1, extra),
+            });
+            right.push({
+                x: c.x - nx * widthAt(t, -1, extra),
+                y: c.y - ny * widthAt(t, -1, extra),
+            });
+        }
+        const reversedRight = [...right].reverse();
+        const startCapDepth = Math.max(1.1, widthAt(0, 1, extra) * (profile.startCap ?? 0.22));
+        const endCapDepth = Math.max(1.1, widthAt(1, 1, extra) * (profile.endCap ?? 0.25));
+        ctx.beginPath();
+        ctx.moveTo(left[0].x, left[0].y);
+        left.slice(1).forEach(point => ctx.lineTo(point.x, point.y));
+        // Curved caps are important here: a straight line across each end makes
+        // the overlay read as a flat capsule or a mechanical rod. Rounded articular
+        // caps keep the silhouette closer to a phalanx or metacarpal head/base.
+        ctx.quadraticCurveTo(
+            end.x + ux * endCapDepth,
+            end.y + uy * endCapDepth,
+            reversedRight[0].x,
+            reversedRight[0].y,
+        );
+        reversedRight.slice(1).forEach(point => ctx.lineTo(point.x, point.y));
+        ctx.quadraticCurveTo(
+            start.x - ux * startCapDepth,
+            start.y - uy * startCapDepth,
+            left[0].x,
+            left[0].y,
+        );
+        ctx.closePath();
+    }
+
+    ctx.save();
+    ctx.globalAlpha *= alpha;
+    ctx.shadowColor = XRAY_BONE_PALETTE.dropShadow;
+    ctx.shadowBlur = maxWidth * 0.95;
+    ctx.shadowOffsetX = maxWidth * 0.16;
+    ctx.shadowOffsetY = maxWidth * 0.24;
+    bonePath(0.7);
+    ctx.fillStyle = XRAY_BONE_PALETTE.castShadow;
+    ctx.fill();
+    ctx.restore();
+
+    ctx.save();
+    ctx.globalAlpha *= alpha;
+    const fill = ctx.createLinearGradient(
+        start.x + nx * maxWidth,
+        start.y + ny * maxWidth,
+        start.x - nx * maxWidth,
+        start.y - ny * maxWidth
+    );
+    fill.addColorStop(0, XRAY_BONE_PALETTE.edgeDark);
+    fill.addColorStop(0.14, XRAY_BONE_PALETTE.edgeMid);
+    fill.addColorStop(0.34, XRAY_BONE_PALETTE.fill);
+    fill.addColorStop(0.52, XRAY_BONE_PALETTE.highlight);
+    fill.addColorStop(0.72, XRAY_BONE_PALETTE.center);
+    fill.addColorStop(1, XRAY_BONE_PALETTE.edgeDark);
+    bonePath();
+    ctx.fillStyle = fill;
+    ctx.fill();
+
+    ctx.save();
+    bonePath();
+    ctx.clip();
+    const axialShade = ctx.createLinearGradient(start.x, start.y, end.x, end.y);
+    axialShade.addColorStop(0, XRAY_BONE_PALETTE.axialShadow);
+    axialShade.addColorStop(0.15, 'rgba(205, 214, 214, 0.10)');
+    axialShade.addColorStop(0.48, XRAY_BONE_PALETTE.axialLight);
+    axialShade.addColorStop(0.86, 'rgba(205, 214, 214, 0.08)');
+    axialShade.addColorStop(1, XRAY_BONE_PALETTE.axialShadow);
+    ctx.fillStyle = axialShade;
+    ctx.fillRect(
+        Math.min(start.x, end.x) - maxWidth * 1.8,
+        Math.min(start.y, end.y) - maxWidth * 1.8,
+        Math.abs(end.x - start.x) + maxWidth * 3.6,
+        Math.abs(end.y - start.y) + maxWidth * 3.6
+    );
+
+    ctx.globalAlpha *= profile.textureAlpha;
+    for (let i = 0; i < profile.textureCount; i++) {
+        const t = ((i * 0.217 + seed * 0.037) % 0.84) + 0.08;
+        const side = Math.sin(seed + i * 2.13) * 0.55;
+        const c = centerAt(t);
+        const radius = widthAt(t, side >= 0 ? 1 : -1) * 0.58;
+        ctx.fillStyle = i % 2 ? XRAY_BONE_PALETTE.textureDark : XRAY_BONE_PALETTE.textureLight;
+        ctx.beginPath();
+        ctx.arc(c.x + nx * side * radius, c.y + ny * side * radius, Math.max(0.6, maxWidth * (0.045 + (i % 3) * 0.01)), 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    // A restrained medullary channel and short trabecular struts give the
+    // stylized shell enough internal density to read as bone rather than plastic.
+    // These are illustration cues only; webcam landmarks cannot reveal real bone density.
+    ctx.globalAlpha = renderedAlpha;
+    drawBoneDensity(ctx, {
+        centerAt,
+        widthAt,
+        ux,
+        uy,
+        nx,
+        ny,
+        maxWidth,
+        seed,
+        profile,
+    });
+
+    ctx.globalAlpha *= 0.85;
+    ctx.strokeStyle = XRAY_BONE_PALETTE.ridge;
+    ctx.lineWidth = Math.max(0.45, maxWidth * 0.045);
+    for (let side = -1; side <= 1; side += 2) {
+        ctx.beginPath();
+        for (let i = 0; i <= 12; i++) {
+            const t = 0.10 + i * 0.067;
+            const c = centerAt(t);
+            const ridgeOffset = widthAt(t, side) * side * 0.58;
+            const wobble = Math.sin(seed + t * 19.0 + side) * maxWidth * 0.045;
+            const x = c.x + nx * (ridgeOffset + wobble);
+            const y = c.y + ny * (ridgeOffset + wobble);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+    }
+
+    drawCondyleGroove(ctx, centerAt(0.11), ux, uy, nx, ny, widthAt(0.10), seed);
+    drawCondyleGroove(ctx, centerAt(0.89), ux, uy, nx, ny, widthAt(0.90), seed + 2.7);
+    ctx.restore();
+
+    ctx.shadowBlur = 0;
+    bonePath();
+    ctx.strokeStyle = XRAY_BONE_PALETTE.outlineDark;
+    ctx.lineWidth = 1.05;
+    ctx.stroke();
+
+    ctx.globalAlpha *= 0.045;
+    ctx.strokeStyle = XRAY_BONE_PALETTE.glow;
+    ctx.lineWidth = 0.65;
+    ctx.stroke();
+    ctx.globalAlpha /= 0.045;
+
+    ctx.globalAlpha *= 0.36;
+    ctx.strokeStyle = XRAY_BONE_PALETTE.highlight;
+    ctx.lineWidth = Math.max(0.85, maxWidth * 0.08);
+    ctx.beginPath();
+    for (let i = 0; i <= 10; i++) {
+        const t = i / 10;
+        const c = centerAt(t);
+        const highlightOffset = widthAt(t) * -0.24;
+        const hx = c.x + nx * highlightOffset;
+        const hy = c.y + ny * highlightOffset;
+        if (i === 0) ctx.moveTo(hx, hy);
+        else ctx.lineTo(hx, hy);
+    }
+    ctx.stroke();
+    ctx.restore();
+}
+
+function drawBoneDensity(ctx, { centerAt, widthAt, ux, uy, nx, ny, maxWidth, seed, profile }) {
+    ctx.save();
+    const densityAlpha = ctx.globalAlpha;
+    ctx.globalAlpha *= profile.marrowAlpha;
+    ctx.strokeStyle = XRAY_BONE_PALETTE.marrow;
+    ctx.lineWidth = Math.max(1.1, maxWidth * 0.34);
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (let i = 0; i <= 14; i++) {
+        const t = 0.12 + i * 0.76 / 14;
+        const center = centerAt(t);
+        const drift = Math.sin(seed + t * 10.7) * widthAt(t) * 0.09;
+        const x = center.x + nx * drift;
+        const y = center.y + ny * drift;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    ctx.globalAlpha *= 0.72;
+    ctx.strokeStyle = XRAY_BONE_PALETTE.corticalHighlight;
+    ctx.lineWidth = Math.max(0.45, maxWidth * 0.075);
+    ctx.beginPath();
+    for (let i = 0; i <= 12; i++) {
+        const t = 0.15 + i * 0.70 / 12;
+        const center = centerAt(t);
+        const drift = Math.sin(seed + t * 10.7) * widthAt(t) * 0.08 - widthAt(t) * 0.09;
+        const x = center.x + nx * drift;
+        const y = center.y + ny * drift;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    ctx.globalAlpha = densityAlpha * profile.marrowAlpha * 0.95;
+    ctx.strokeStyle = XRAY_BONE_PALETTE.trabecular;
+    ctx.lineWidth = Math.max(0.45, maxWidth * 0.055);
+    const count = profile.trabecularCount ?? 4;
+    for (let i = 0; i < count; i++) {
+        const endRegion = i % 2 === 0 ? 0.17 + i * 0.025 : 0.83 - i * 0.025;
+        const center = centerAt(endRegion);
+        const halfWidth = widthAt(endRegion) * 0.55;
+        const slant = (i % 3 - 1) * maxWidth * 0.12;
+        ctx.beginPath();
+        ctx.moveTo(
+            center.x - nx * halfWidth - ux * slant,
+            center.y - ny * halfWidth - uy * slant
+        );
+        ctx.quadraticCurveTo(
+            center.x + ux * maxWidth * 0.16,
+            center.y + uy * maxWidth * 0.16,
+            center.x + nx * halfWidth + ux * slant,
+            center.y + ny * halfWidth + uy * slant
+        );
+        ctx.stroke();
+    }
+    ctx.restore();
+}
+
+function drawCondyleGroove(ctx, center, ux, uy, nx, ny, width, seed) {
+    const grooveWidth = Math.max(2.8, width * 1.05);
+    const grooveDepth = Math.max(1.2, width * 0.18);
+    const shift = Math.sin(seed) * width * 0.05;
+    ctx.save();
+    ctx.globalAlpha *= 0.55;
+    ctx.strokeStyle = 'rgba(96, 106, 110, 0.34)';
+    ctx.lineWidth = Math.max(0.55, width * 0.075);
+    ctx.beginPath();
+    ctx.moveTo(
+        center.x + nx * -grooveWidth * 0.48 + ux * shift,
+        center.y + ny * -grooveWidth * 0.48 + uy * shift
+    );
+    ctx.quadraticCurveTo(
+        center.x + ux * grooveDepth,
+        center.y + uy * grooveDepth,
+        center.x + nx * grooveWidth * 0.48 - ux * shift,
+        center.y + ny * grooveWidth * 0.48 - uy * shift
+    );
+    ctx.stroke();
+    ctx.restore();
+}
+
+function createCarpalLayout({ wrist, thumbCmc, indexMcp, middleMcp, ringMcp, pinkyMcp, scale }) {
+    const mcpCenter = averagePoints([indexMcp, middleMcp, ringMcp, pinkyMcp]);
+    const distalAxis = normalizeVector({
+        x: middleMcp.x - wrist.x,
+        y: middleMcp.y - wrist.y,
+    }, { x: 0, y: -1 });
+    const radialPoint = mid(thumbCmc, indexMcp);
+    const radialAxis = normalizeVector({
+        x: radialPoint.x - pinkyMcp.x,
+        y: radialPoint.y - pinkyMcp.y,
+    }, perpendicularVector(distalAxis));
+    // Keep the wrist compact, but place it high enough to visibly support the
+    // metacarpals. A taller, slightly interlocked two-row group reads much closer
+    // to an anatomical carpus than eight isolated circular beads.
+    const center = {
+        x: wrist.x + (mcpCenter.x - wrist.x) * 0.235,
+        y: wrist.y + (mcpCenter.y - wrist.y) * 0.235,
+    };
+    const width = clamp(dist(radialPoint, pinkyMcp) * 0.50, 26 * scale, 94 * scale);
+    const height = clamp(dist(wrist, middleMcp) * 0.255, 20 * scale, 48 * scale);
+    const proximalRow = movePoint(center, distalAxis, -height * 0.19);
+    const distalRow = movePoint(center, distalAxis, height * 0.22);
+    const angle = Math.atan2(radialAxis.y, radialAxis.x);
+    const baseRx = clamp(width * 0.088, 4.3 * scale, 7.8 * scale);
+    const baseRy = clamp(height * 0.205, 4.4 * scale, 8.4 * scale);
+
+    function carpal(id, name, rowPoint, radialOffset, distalOffset, rxScale, ryScale, rotation, location) {
+        return {
+            id,
+            name,
+            center: movePoint(movePoint(rowPoint, radialAxis, width * radialOffset), distalAxis, height * distalOffset),
+            rx: baseRx * rxScale,
+            ry: baseRy * ryScale,
+            angle: angle + rotation,
+            location,
+        };
+    }
+
+    const bones = [
+        carpal('scaphoid', 'Scaphoid', proximalRow, 0.41, -0.03, 1.34, 0.92, 0.24, 'proximal row, radial/thumb side'),
+        carpal('lunate', 'Lunate', proximalRow, 0.09, -0.05, 1.08, 1.07, 0.02, 'proximal row, central wrist'),
+        carpal('triquetrum', 'Triquetrum', proximalRow, -0.27, 0.00, 1.18, 0.95, -0.18, 'proximal row, ulnar/pinky side'),
+        carpal('pisiform', 'Pisiform', proximalRow, -0.46, 0.18, 0.61, 0.58, 0.30, 'small ulnar-side carpal near triquetrum'),
+        carpal('trapezium', 'Trapezium', distalRow, 0.55, 0.04, 1.30, 1.03, 0.22, 'distal row under the thumb metacarpal'),
+        carpal('trapezoid', 'Trapezoid', distalRow, 0.25, -0.02, 0.86, 0.90, -0.10, 'distal row under the index metacarpal'),
+        carpal('capitate', 'Capitate', distalRow, -0.07, 0.00, 1.16, 1.34, 0.02, 'distal row, central wrist under the middle metacarpal'),
+        carpal('hamate', 'Hamate', distalRow, -0.34, 0.03, 1.26, 1.02, -0.20, 'distal row under the ring and pinky side'),
+    ];
+
+    return {
+        center,
+        radius: width * 0.58,
+        bones,
+    };
+}
+
+function drawCarpalAnatomyNode(ctx, carpal) {
+    ctx.save();
+    ctx.translate(carpal.center.x, carpal.center.y);
+    ctx.rotate(carpal.angle);
+    const seed = carpal.id.split('').reduce((sum, char) => sum + char.charCodeAt(0), 0) * 0.137;
+    const maxR = Math.max(carpal.rx, carpal.ry);
+
+    function carpalPath(extra = 0) {
+        const samples = 24;
+        ctx.beginPath();
+        for (let i = 0; i <= samples; i++) {
+            const t = (i / samples) * Math.PI * 2;
+            const organic = 1
+                + Math.sin(seed + t * 2.2) * 0.075
+                + Math.sin(seed * 1.7 + t * 4.1) * 0.045
+                + Math.cos(seed * 0.9 + t * 5.3) * 0.025;
+            const contour = getCarpalContour(carpal.id, t);
+            const x = Math.cos(t) * (carpal.rx + extra) * organic * contour.x;
+            const y = Math.sin(t) * (carpal.ry + extra)
+                * (1 + Math.sin(seed + t * 3.4) * 0.055) * contour.y;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+    }
+
+    ctx.shadowColor = 'rgba(38, 44, 46, 0.26)';
+    ctx.shadowBlur = maxR * 0.70;
+    ctx.shadowOffsetX = carpal.rx * 0.12;
+    ctx.shadowOffsetY = carpal.ry * 0.18;
+    carpalPath(0.8);
+    ctx.fillStyle = XRAY_BONE_PALETTE.castShadow;
+    ctx.fill();
+
+    ctx.shadowBlur = 0;
+    const fill = ctx.createRadialGradient(-carpal.rx * 0.36, -carpal.ry * 0.42, 0.8, carpal.rx * 0.08, carpal.ry * 0.10, maxR * 1.55);
+    fill.addColorStop(0, 'rgba(255, 255, 255, 0.82)');
+    fill.addColorStop(0.28, 'rgba(234, 238, 236, 0.72)');
+    fill.addColorStop(0.64, 'rgba(172, 182, 184, 0.52)');
+    fill.addColorStop(1, 'rgba(92, 102, 106, 0.44)');
+    carpalPath();
+    ctx.fillStyle = fill;
+    ctx.fill();
+
+    ctx.save();
+    carpalPath();
+    ctx.clip();
+    ctx.globalAlpha *= 0.24;
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.58)';
+    ctx.lineWidth = Math.max(0.8, maxR * 0.11);
+    ctx.beginPath();
+    ctx.moveTo(-carpal.rx * 0.54, -carpal.ry * 0.20);
+    ctx.quadraticCurveTo(-carpal.rx * 0.06, -carpal.ry * 0.48, carpal.rx * 0.42, -carpal.ry * 0.16);
+    ctx.stroke();
+    ctx.globalAlpha *= 0.65;
+    ctx.fillStyle = 'rgba(86, 96, 100, 0.30)';
+    for (let i = 0; i < 3; i++) {
+        const px = Math.sin(seed + i * 1.9) * carpal.rx * 0.36;
+        const py = Math.cos(seed * 1.3 + i * 2.2) * carpal.ry * 0.32;
+        ctx.beginPath();
+        ctx.arc(px, py, Math.max(0.55, maxR * 0.055), 0, Math.PI * 2);
+        ctx.fill();
+    }
+    drawCarpalDensity(ctx, carpal, seed, maxR);
+    ctx.restore();
+
+    carpalPath();
+    ctx.strokeStyle = XRAY_BONE_PALETTE.outlineDark;
+    ctx.lineWidth = 0.85;
+    ctx.stroke();
+    ctx.globalAlpha *= 0.04;
+    ctx.strokeStyle = XRAY_BONE_PALETTE.glow;
+    ctx.lineWidth = 0.7;
+    ctx.stroke();
+    ctx.restore();
+}
+
+function getCarpalContour(id, t) {
+    // A compact two-row wrist needs individual silhouettes to avoid reading as
+    // eight generic beads. These are restrained illustration profiles for the
+    // named carpals, not a claim of patient-specific carpal detection.
+    switch (id) {
+        case 'scaphoid':
+            return {
+                x: 1 + Math.cos(t - 0.48) * 0.11 - Math.sin(t * 2.0 - 0.30) * 0.045,
+                y: 1 - Math.cos(t - 0.48) * 0.075 + Math.sin(t * 2.0 + 0.56) * 0.035,
+            };
+        case 'lunate':
+            return {
+                x: 1 + Math.cos(t * 2.0 + 0.36) * 0.055,
+                y: 1 + Math.cos(t - 1.2) * 0.065 - Math.cos(t * 2.0 + 0.2) * 0.045,
+            };
+        case 'triquetrum':
+            return {
+                x: 1 + Math.cos(t * 3.0 + 0.30) * 0.075,
+                y: 1 + Math.sin(t * 3.0 - 0.40) * 0.055,
+            };
+        case 'pisiform':
+            return {
+                x: 1 + Math.cos(t * 2.0 - 0.60) * 0.035,
+                y: 1 + Math.sin(t * 2.0 + 0.20) * 0.035,
+            };
+        case 'trapezium':
+            return {
+                x: 1 + Math.cos(t * 4.0 + 0.26) * 0.070,
+                y: 1 + Math.sin(t * 4.0 - 0.36) * 0.052,
+            };
+        case 'trapezoid':
+            return {
+                x: 1 + Math.cos(t * 4.0 - 0.48) * 0.060,
+                y: 1 + Math.sin(t * 3.0 + 0.42) * 0.045,
+            };
+        case 'capitate':
+            return {
+                x: 1 + Math.cos(t - 0.18) * 0.070 + Math.cos(t * 2.0 + 0.60) * 0.030,
+                y: 1 + Math.cos(t * 2.0 - 0.40) * 0.055,
+            };
+        case 'hamate':
+            return {
+                x: 1 + Math.cos(t * 3.0 - 0.62) * 0.065,
+                y: 1 + Math.sin(t * 2.0 + 0.74) * 0.055,
+            };
+        default:
+            return { x: 1, y: 1 };
+    }
+}
+
+function drawCarpalDensity(ctx, carpal, seed, maxR) {
+    ctx.save();
+    ctx.globalAlpha = 0.24;
+    ctx.strokeStyle = XRAY_BONE_PALETTE.trabecular;
+    ctx.lineWidth = Math.max(0.42, maxR * 0.065);
+    ctx.lineCap = 'round';
+    for (let i = 0; i < 3; i++) {
+        const y = (-0.30 + i * 0.28) * carpal.ry;
+        const bow = Math.sin(seed + i * 1.6) * carpal.ry * 0.16;
+        ctx.beginPath();
+        ctx.moveTo(-carpal.rx * 0.48, y - bow);
+        ctx.quadraticCurveTo(0, y + bow, carpal.rx * 0.44, y - bow * 0.45);
+        ctx.stroke();
+    }
+    ctx.globalAlpha = 0.17;
+    ctx.strokeStyle = XRAY_BONE_PALETTE.corticalHighlight;
+    ctx.lineWidth = Math.max(0.36, maxR * 0.045);
+    ctx.beginPath();
+    ctx.moveTo(-carpal.rx * 0.48, -carpal.ry * 0.30);
+    ctx.quadraticCurveTo(-carpal.rx * 0.04, -carpal.ry * 0.52, carpal.rx * 0.40, -carpal.ry * 0.24);
+    ctx.stroke();
+    ctx.restore();
+}
+
+function averagePoints(points) {
+    return {
+        x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+        y: points.reduce((sum, point) => sum + point.y, 0) / points.length,
+    };
+}
+
+function normalizeVector(vector, fallback) {
+    const length = Math.hypot(vector.x, vector.y);
+    if (length < 0.0001) return fallback;
+    return { x: vector.x / length, y: vector.y / length };
+}
+
+function perpendicularVector(vector) {
+    return { x: -vector.y, y: vector.x };
+}
+
+function movePoint(point, axis, amount) {
+    return {
+        x: point.x + axis.x * amount,
+        y: point.y + axis.y * amount,
+    };
+}
+
+function moveToward(a, b, amount) {
+    return {
+        x: a.x + (b.x - a.x) * amount,
+        y: a.y + (b.y - a.y) * amount,
+    };
 }
 
 // ── Flat-fronted anatomical bone: trapezoidal profile with flat anterior surface ──
@@ -286,9 +3008,264 @@ function drawRealBone(ctx, a, b, endWidth, midWidth) {
     ctx.restore();
 }
 
+function drawTaperedCapsule(ctx, a, b, startWidth, endWidth, highlighted = false) {
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    if (len < 2) return;
+    const nx = -dy / len, ny = dx / len;
+    const ux = dx / len, uy = dy / len;
+    const start = startWidth * (highlighted ? 1.18 : 1);
+    const end = endWidth * (highlighted ? 1.18 : 1);
+
+    ctx.save();
+    ctx.shadowColor = highlighted ? 'rgba(0,255,136,0.65)' : 'rgba(12, 8, 4, 0.55)';
+    ctx.shadowBlur = highlighted ? 16 : start * 0.75;
+    ctx.shadowOffsetX = highlighted ? 0 : start * 0.12;
+    ctx.shadowOffsetY = highlighted ? 0 : start * 0.18;
+
+    ctx.beginPath();
+    ctx.moveTo(a.x + nx * start, a.y + ny * start);
+    ctx.lineTo(b.x + nx * end, b.y + ny * end);
+    ctx.quadraticCurveTo(b.x + ux * end, b.y + uy * end, b.x - nx * end, b.y - ny * end);
+    ctx.lineTo(a.x - nx * start, a.y - ny * start);
+    ctx.quadraticCurveTo(a.x - ux * start, a.y - uy * start, a.x + nx * start, a.y + ny * start);
+    ctx.closePath();
+
+    const grad = ctx.createLinearGradient(a.x + nx * start, a.y + ny * start, a.x - nx * start, a.y - ny * start);
+    grad.addColorStop(0, highlighted ? '#fff7d0' : '#f7f1df');
+    grad.addColorStop(0.5, highlighted ? '#d9f8cf' : '#d8cfbc');
+    grad.addColorStop(1, highlighted ? '#a9d28a' : '#8f836d');
+    ctx.fillStyle = grad;
+    ctx.fill();
+    ctx.strokeStyle = highlighted ? '#00ff88' : 'rgba(95, 82, 60, 0.55)';
+    ctx.lineWidth = highlighted ? 2 : 0.9;
+    ctx.stroke();
+    ctx.restore();
+}
+
+function drawCarpalBone(ctx, center, rx, ry, angle, highlighted = false) {
+    ctx.save();
+    ctx.translate(center.x, center.y);
+    ctx.rotate(angle);
+    ctx.shadowColor = highlighted ? 'rgba(0,255,136,0.65)' : 'rgba(12, 8, 4, 0.55)';
+    ctx.shadowBlur = highlighted ? 16 : rx * 0.7;
+    ctx.fillStyle = highlighted ? '#d9f8cf' : '#d8d0c0';
+    ctx.beginPath();
+    ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    const grad = ctx.createRadialGradient(-rx * 0.35, -ry * 0.35, 1, rx * 0.12, ry * 0.12, rx * 1.25);
+    grad.addColorStop(0, 'rgba(255, 254, 248, 0.96)');
+    grad.addColorStop(0.5, 'rgba(196, 186, 166, 0.62)');
+    grad.addColorStop(1, 'rgba(78, 66, 48, 0.85)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = highlighted ? '#00ff88' : 'rgba(95, 82, 60, 0.70)';
+    ctx.lineWidth = highlighted ? 2 : 1;
+    ctx.stroke();
+    ctx.restore();
+}
+
+function drawSmartLabels(ctx, labels, visibleBounds, options = {}) {
+    const placed = [];
+    const bounds = visibleBounds || { left: 16, top: 16, right: window.innerWidth - 16, bottom: window.innerHeight - 16 };
+    const sorted = [...labels].sort((a, b) => (a.priority ?? 9) - (b.priority ?? 9));
+    const maxLabels = options.maxLabels ?? (labels.length > 22 ? 22 : labels.length);
+    const isMedical = options.theme === 'medical';
+    const fontSize = options.fontSize ?? (isMedical ? 10 : 9);
+    const centerX = options.avoidRegion?.centerX ?? (bounds.left + bounds.right) / 2;
+
+    sorted.forEach((label, index) => {
+        if (placed.length >= maxLabels) return;
+        const text = label.text;
+        ctx.font = isMedical
+            ? `${fontSize}px system-ui, -apple-system, BlinkMacSystemFont, sans-serif`
+            : `${fontSize}px "Share Tech Mono", monospace`;
+        const pad = isMedical ? 6 : 3;
+        const w = ctx.measureText(text).width + pad * 2;
+        const h = fontSize + 9;
+        const side = label.preferredSide || (
+            options.outwardFromCenter
+                ? (label.point.x < centerX ? -1 : 1)
+                : (label.point.x < (bounds.left + bounds.right) / 2 ? 1 : -1)
+        );
+        const rect = placeLabelRect({
+            target: label.point,
+            w,
+            h,
+            side,
+            index,
+            placed,
+            bounds,
+            isMedical,
+            keepLeadersShort: options.keepLeadersShort,
+            avoidRegion: options.avoidRegion,
+            preferRegionEdge: options.preferRegionEdge,
+        });
+        if (!rect) return;
+        placed.push(rect);
+        drawLabelRect(ctx, text, label.target || label.point, rect, isMedical ? 'rgba(238, 246, 236, 0.98)' : '#00ff88', {
+            medical: isMedical,
+            pad,
+            fontSize,
+        });
+    });
+}
+
+function placeLabelRect({ target, w, h, side, index, placed, bounds, isMedical, keepLeadersShort, avoidRegion, preferRegionEdge }) {
+    const margin = 8;
+    const xOffsets = isMedical
+        ? [66, 84, 106, 48].map(value => value * side)
+        : [30, 44, 18].map(value => value * side);
+    const yOffsets = isMedical
+        ? [0, -28, 28, -54, 54, -82, 82]
+        : [0, -18, 18, -36, 36];
+    const candidates = [];
+
+    const addCandidate = (rawX, rawY, xIndex, yIndex, dy, regionEdge = false) => {
+        const candidate = {
+            x: clamp(rawX, bounds.left + margin, bounds.right - w - margin),
+            y: clamp(rawY, bounds.top + margin, bounds.bottom - h - margin),
+            w,
+            h,
+        };
+        const anchor = getLabelAnchor(candidate, target);
+        const leaderLength = dist(target, anchor);
+        const overlapPenalty = placed.some(other => rectsOverlap(candidate, other)) ? 10000 : 0;
+        const anatomyPenalty = avoidRegion && rectOverlapsRegion(candidate, avoidRegion) ? 70 : 0;
+        const edgePenalty = candidate.x === bounds.left + margin || candidate.x === bounds.right - w - margin ? 14 : 0;
+        const longLeaderPenalty = keepLeadersShort && leaderLength > 150 ? 120 : 0;
+        candidates.push({
+            rect: candidate,
+            score: overlapPenalty + anatomyPenalty + leaderLength + Math.abs(dy) * 0.42 + xIndex * 5 + yIndex * 0.8 + edgePenalty + longLeaderPenalty - (regionEdge ? 18 : 0),
+        });
+    };
+
+    if (preferRegionEdge && avoidRegion) {
+        [12, 26, 40].forEach((gap, gapIndex) => {
+            yOffsets.forEach((dy, yIndex) => {
+                const rawX = side > 0 ? avoidRegion.right + gap : avoidRegion.left - gap - w;
+                const rawY = target.y - h / 2 + dy + ((index % 2) * 3);
+                addCandidate(rawX, rawY, gapIndex, yIndex, dy, true);
+            });
+        });
+    }
+
+    xOffsets.forEach((dx, xIndex) => {
+        yOffsets.forEach((dy, yIndex) => {
+            const rawX = dx > 0 ? target.x + dx : target.x + dx - w;
+            const rawY = target.y - h / 2 + dy + ((index % 2) * 3);
+            addCandidate(rawX, rawY, xIndex, yIndex, dy);
+        });
+    });
+
+    const best = candidates
+        .filter(candidate => !placed.some(other => rectsOverlap(candidate.rect, other)))
+        .filter(candidate => !avoidRegion || !rectOverlapsRegion(candidate.rect, avoidRegion) || placed.length < 2)
+        .sort((a, b) => a.score - b.score)[0];
+
+    if (best) return best.rect;
+    if (placed.length > 4) return null;
+
+    const fallback = candidates.sort((a, b) => a.score - b.score)[0];
+    if (!fallback) return null;
+    for (let nudge = 0; nudge <= 80; nudge += 20) {
+        const candidate = {
+            ...fallback.rect,
+            y: clamp(fallback.rect.y + (index % 2 === 0 ? -nudge : nudge), bounds.top + margin, bounds.bottom - h - margin),
+        };
+        if (!placed.some(other => rectsOverlap(candidate, other))) return candidate;
+    }
+    return null;
+}
+
+function rectOverlapsRegion(rect, region) {
+    return !(
+        rect.x + rect.w < region.left ||
+        rect.x > region.right ||
+        rect.y + rect.h < region.top ||
+        rect.y > region.bottom
+    );
+}
+
+function drawLabelRect(ctx, text, target, rect, color, options = {}) {
+    ctx.save();
+    const isMedical = options.medical;
+    ctx.fillStyle = isMedical ? 'rgba(16, 22, 20, 0.76)' : '#000000b8';
+    ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+    ctx.strokeStyle = isMedical ? 'rgba(130, 178, 154, 0.58)' : color;
+    ctx.lineWidth = isMedical ? 0.85 : 1;
+    ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+    ctx.fillStyle = color;
+    ctx.fillText(text, rect.x + (options.pad ?? 3), rect.y + (isMedical ? (options.fontSize ?? 10) + 4.5 : 12));
+
+    const anchor = getLabelAnchor(rect, target);
+    ctx.globalAlpha = isMedical ? 0.58 : 0.52;
+    ctx.strokeStyle = isMedical ? 'rgba(162, 204, 182, 0.62)' : color;
+    ctx.lineWidth = isMedical ? 0.75 : 1;
+    ctx.beginPath();
+    ctx.moveTo(target.x, target.y);
+    ctx.lineTo(anchor.x, anchor.y);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(target.x, target.y, isMedical ? 1.25 : 1.8, 0, Math.PI * 2);
+    ctx.fillStyle = isMedical ? 'rgba(196, 230, 208, 0.76)' : color;
+    ctx.fill();
+    ctx.restore();
+}
+
+function getLabelAnchor(rect, target) {
+    return {
+        x: target.x < rect.x ? rect.x : rect.x + rect.w,
+        y: clamp(target.y, rect.y + 4, rect.y + rect.h - 4),
+    };
+}
+
+function drawDebugLandmarks(ctx, model) {
+    ctx.save();
+    ctx.font = '8px "Share Tech Mono", monospace';
+    model.rawLandmarks.forEach((raw, index) => {
+        const smooth = model.landmarks[index];
+        ctx.strokeStyle = '#ffaa00aa';
+        ctx.beginPath();
+        ctx.arc(raw.x, raw.y, 2.5, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = '#00ff88';
+        ctx.beginPath();
+        ctx.arc(smooth.x, smooth.y, 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillText(String(index), smooth.x + 5, smooth.y - 5);
+        ctx.strokeStyle = '#ffaa0055';
+        ctx.beginPath();
+        ctx.moveTo(raw.x, raw.y);
+        ctx.lineTo(smooth.x, smooth.y);
+        ctx.stroke();
+    });
+
+    model.bones.forEach((bone) => {
+        const anchor = bone.center || bone.labelPoint;
+        if (!anchor) return;
+        ctx.strokeStyle = bone.group === 'carpals' ? '#e0e8ffaa' : '#00ff8855';
+        ctx.beginPath();
+        ctx.rect(anchor.x - 3, anchor.y - 3, 6, 6);
+        ctx.stroke();
+    });
+
+    ctx.fillStyle = '#00ff88';
+    ctx.fillText(
+        `CONF ${(model.confidence.score * 100).toFixed(0)}% ${model.handedness.label} ${model.handedness.uncertain ? 'UNCERTAIN' : model.handedness.source}`,
+        model.origin.x + 18,
+        model.origin.y + 28
+    );
+    ctx.restore();
+}
+
 // ── Distal phalanx: tapers from wide base to smooth narrow rounded tip ──
 // Real distal phalanges narrow smoothly toward the fingertip, ending in a
 // gentle rounded point — NOT a wide paddle shape.
+// eslint-disable-next-line no-unused-vars
 function drawDistalPhalanx(ctx, a, b, endWidth, midWidth) {
     const dx = b.x - a.x, dy = b.y - a.y;
     const len = Math.sqrt(dx * dx + dy * dy);
@@ -458,6 +3435,7 @@ function drawKnuckle(ctx, point, radius) {
 
 // ── Carpal cluster: 8 irregular cobblestone-shaped bones tightly packed ──
 // Each bone is an organic blob (perturbed ellipse via sum of sines) with 3D shading.
+// eslint-disable-next-line no-unused-vars
 function drawCarpalCluster(ctx, wrist, landmarks, w, h) {
     const idxMcp = { x: landmarks[HAND.INDEX_MCP].x * w, y: landmarks[HAND.INDEX_MCP].y * h };
     const pinkyMcp = { x: landmarks[HAND.PINKY_MCP].x * w, y: landmarks[HAND.PINKY_MCP].y * h };
@@ -706,169 +3684,6 @@ function drawSpine(ctx, top, bottom) {
 //   DRAWING PRIMITIVES
 // ═══════════════════════════════════════
 
-// ── Muscle belly: large muscle mass with gradient + fiber lines ──
-function drawMuscleBelly(ctx, origin, insertion, controlPts, colorLight, colorDark, width) {
-    const dx = insertion.x - origin.x, dy = insertion.y - origin.y;
-    const len = Math.sqrt(dx * dx + dy * dy);
-    if (len < 2) return;
-    const nx = -dy / len, ny = dx / len;
-
-    // Gradient for muscle tissue
-    const grad = ctx.createLinearGradient(
-        origin.x + nx * width, origin.y + ny * width,
-        origin.x - nx * width, origin.y - ny * width
-    );
-    grad.addColorStop(0, colorDark);
-    grad.addColorStop(0.2, colorLight);
-    grad.addColorStop(0.5, colorDark);
-    grad.addColorStop(0.8, colorLight);
-    grad.addColorStop(1, colorDark);
-
-    ctx.fillStyle = grad;
-    ctx.strokeStyle = colorDark;
-    ctx.lineWidth = 1.5;
-
-    // Build muscle shape with control points
-    const allPts = [origin, ...controlPts, insertion];
-    ctx.beginPath();
-    ctx.moveTo(allPts[0].x + nx * width * 0.3, allPts[0].y + ny * width * 0.3);
-    for (let i = 1; i < allPts.length; i++) {
-        const buldge = (i === Math.floor(allPts.length / 2)) ? 1.3 : 0.9;
-        ctx.lineTo(allPts[i].x + nx * width * buldge, allPts[i].y + ny * width * buldge);
-    }
-    for (let i = allPts.length - 1; i >= 0; i--) {
-        const buldge = (i === Math.floor(allPts.length / 2)) ? 1.3 : 0.9;
-        ctx.lineTo(allPts[i].x - nx * width * buldge, allPts[i].y - ny * width * buldge);
-    }
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-
-    // Fiber lines (parallel striations)
-    ctx.strokeStyle = colorLight;
-    ctx.lineWidth = 0.8;
-    ctx.globalAlpha *= 0.4;
-    for (let f = -3; f <= 3; f++) {
-        const offset = f * width * 0.15;
-        ctx.beginPath();
-        ctx.moveTo(origin.x + nx * offset, origin.y + ny * offset);
-        for (let i = 1; i < allPts.length; i++) {
-            ctx.lineTo(allPts[i].x + nx * offset, allPts[i].y + ny * offset);
-        }
-        ctx.stroke();
-    }
-    ctx.globalAlpha /= 0.4;
-}
-
-// ── Muscle bundle: individual spindle-shaped muscle with fibers ──
-function drawMuscleBundle(ctx, a, b, color, endWidth, midWidth) {
-    const dx = b.x - a.x, dy = b.y - a.y;
-    const len = Math.sqrt(dx * dx + dy * dy);
-    if (len < 2) return;
-    const nx = -dy / len, ny = dx / len;
-    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-
-    // Spindle shape with bulging middle
-    const grad = ctx.createLinearGradient(
-        mx + nx * midWidth * 1.5, my + ny * midWidth * 1.5,
-        mx - nx * midWidth * 1.5, my - ny * midWidth * 1.5
-    );
-    grad.addColorStop(0, color + '40');
-    grad.addColorStop(0.3, color);
-    grad.addColorStop(0.5, color + 'cc');
-    grad.addColorStop(0.7, color);
-    grad.addColorStop(1, color + '40');
-
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.moveTo(a.x + nx * endWidth * 0.3, a.y + ny * endWidth * 0.3);
-    ctx.quadraticCurveTo(mx + nx * midWidth * 1.4, my + ny * midWidth * 1.4,
-        b.x + nx * endWidth * 0.3, b.y + ny * endWidth * 0.3);
-    ctx.lineTo(b.x - nx * endWidth * 0.3, b.y - ny * endWidth * 0.3);
-    ctx.quadraticCurveTo(mx - nx * midWidth * 1.4, my - ny * midWidth * 1.4,
-        a.x - nx * endWidth * 0.3, a.y - ny * endWidth * 0.3);
-    ctx.closePath();
-    ctx.fill();
-
-    // Fiber striations
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 0.6;
-    ctx.globalAlpha *= 0.35;
-    for (let f = -2; f <= 2; f++) {
-        const fo = f * midWidth * 0.2;
-        ctx.beginPath();
-        ctx.moveTo(a.x + nx * fo * 0.4, a.y + ny * fo * 0.4);
-        ctx.quadraticCurveTo(mx + nx * fo * 1.3, my + ny * fo * 1.3,
-            b.x + nx * fo * 0.4, b.y + ny * fo * 0.4);
-        ctx.stroke();
-    }
-    ctx.globalAlpha /= 0.35;
-
-    // Muscle border
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1;
-    ctx.globalAlpha *= 0.7;
-    ctx.beginPath();
-    ctx.moveTo(a.x + nx * endWidth * 0.3, a.y + ny * endWidth * 0.3);
-    ctx.quadraticCurveTo(mx + nx * midWidth * 1.4, my + ny * midWidth * 1.4,
-        b.x + nx * endWidth * 0.3, b.y + ny * endWidth * 0.3);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(a.x - nx * endWidth * 0.3, a.y - ny * endWidth * 0.3);
-    ctx.quadraticCurveTo(mx - nx * midWidth * 1.4, my - ny * midWidth * 1.4,
-        b.x - nx * endWidth * 0.3, b.y - ny * endWidth * 0.3);
-    ctx.stroke();
-    ctx.globalAlpha /= 0.7;
-}
-
-// ── Tendon line: white/pink cord connecting muscle to bone ──
-function drawTendonLine(ctx, points) {
-    if (points.length < 2) return;
-    // Outer glow
-    ctx.strokeStyle = '#ffbbbb';
-    ctx.lineWidth = 3;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.globalAlpha *= 0.3;
-    ctx.beginPath();
-    ctx.moveTo(points[0].x, points[0].y);
-    points.slice(1).forEach(pt => ctx.lineTo(pt.x, pt.y));
-    ctx.stroke();
-    ctx.globalAlpha /= 0.3;
-
-    // Core tendon
-    ctx.strokeStyle = '#f0d0d0';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(points[0].x, points[0].y);
-    points.slice(1).forEach(pt => ctx.lineTo(pt.x, pt.y));
-    ctx.stroke();
-}
-
-// ── Muscle band (retinaculum): horizontal band across wrist ──
-function drawMuscleBand(ctx, center, width) {
-    const grad = ctx.createLinearGradient(center.x - width, center.y, center.x + width, center.y);
-    grad.addColorStop(0, '#99222240');
-    grad.addColorStop(0.5, '#bb3344aa');
-    grad.addColorStop(1, '#99222240');
-
-    ctx.fillStyle = grad;
-    ctx.strokeStyle = '#aa3344';
-    ctx.lineWidth = 1;
-    ctx.fillRect(center.x - width, center.y - 5, width * 2, 10);
-    ctx.strokeRect(center.x - width, center.y - 5, width * 2, 10);
-
-    // Horizontal fibers
-    ctx.strokeStyle = '#cc445566';
-    ctx.lineWidth = 0.5;
-    for (let y = -3; y <= 3; y += 2) {
-        ctx.beginPath();
-        ctx.moveTo(center.x - width * 0.9, center.y + y);
-        ctx.lineTo(center.x + width * 0.9, center.y + y);
-        ctx.stroke();
-    }
-}
-
 // ── Body muscle strip with fibers (for arms, legs) ──
 function drawMuscleStrip(ctx, a, b, color, width) {
     const dx = b.x - a.x, dy = b.y - a.y;
@@ -938,10 +3753,14 @@ function drawShape(ctx, points, color) {
 }
 
 function drawLabel(ctx, text, point, color) {
+    drawLabelAt(ctx, text, point, color, 15, -5);
+}
+
+function drawLabelAt(ctx, text, point, color, dx, dy) {
     ctx.font = '10px "Share Tech Mono", monospace';
     const metrics = ctx.measureText(text.toUpperCase());
     const pad = 4;
-    const lx = point.x + 15, ly = point.y - 5;
+    const lx = point.x + dx, ly = point.y + dy;
 
     ctx.fillStyle = '#000000aa';
     ctx.fillRect(lx - pad, ly - 10 - pad, metrics.width + pad * 2, 14 + pad * 2);
@@ -965,6 +3784,10 @@ function drawLabel(ctx, text, point, color) {
 
 function mid(a, b) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
 function dist(a, b) { return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2); }
+function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
+function rectsOverlap(a, b) {
+    return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
 
 // ═══════════════════════════════════════
 //   FACE / SKULL ANATOMY RENDERERS
@@ -977,10 +3800,35 @@ const FACE_CONTOUR = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288,
     234, 127, 162, 21, 54, 103, 67, 109];
 const LEFT_EYE_RING = [33, 246, 161, 160, 159, 158, 157, 173, 133, 155, 154, 153, 145, 144, 163, 7];
 const RIGHT_EYE_RING = [263, 466, 388, 387, 386, 385, 384, 398, 362, 382, 381, 380, 374, 373, 390, 249];
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const UPPER_LIP_LINE = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291];
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const LOWER_LIP_LINE = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291];
+const FACE_MUSCLE_PALETTES = {
+    superficial: {
+        light: 'rgba(236, 132, 121, 0.96)',
+        mid: 'rgba(184, 72, 78, 0.96)',
+        dark: 'rgba(92, 34, 43, 0.94)',
+        shadow: 'rgba(50, 16, 22, 0.30)',
+        edge: 'rgba(91, 32, 40, 0.48)',
+        highlight: 'rgba(249, 181, 165, 0.24)',
+        fiber: 'rgba(244, 166, 151, 0.31)',
+    },
+    deep: {
+        light: 'rgba(203, 105, 101, 0.90)',
+        mid: 'rgba(139, 55, 65, 0.92)',
+        dark: 'rgba(72, 29, 39, 0.92)',
+        shadow: 'rgba(42, 14, 20, 0.28)',
+        edge: 'rgba(72, 26, 35, 0.44)',
+        highlight: 'rgba(229, 148, 139, 0.20)',
+        fiber: 'rgba(224, 137, 132, 0.25)',
+    },
+    mastication: {
+        light: 'rgba(218, 116, 105, 0.94)',
+        mid: 'rgba(156, 60, 66, 0.95)',
+        dark: 'rgba(73, 28, 35, 0.94)',
+        shadow: 'rgba(42, 14, 18, 0.31)',
+        edge: 'rgba(72, 27, 32, 0.49)',
+        highlight: 'rgba(239, 159, 145, 0.22)',
+        fiber: 'rgba(232, 146, 137, 0.28)',
+    },
+};
 
 export function drawFaceSkull(ctx, landmarks, w, h) {
     const p = (i) => ({ x: landmarks[i].x * w, y: landmarks[i].y * h });
@@ -1303,85 +4151,276 @@ function drawSutureLine(ctx, a, b, amp) {
     ctx.stroke();
 }
 
-export function drawFaceMuscles(ctx, landmarks, w, h) {
-    const p = (i) => ({ x: landmarks[i].x * w, y: landmarks[i].y * h });
-    const F = FACE;
+// Educational projection of superficial facial anatomy. The face mesh tracks
+// skin landmarks, not the muscles themselves, so deep structures are omitted
+// and every muscle position remains an anatomy-based estimate.
+export function drawFaceMuscles(ctx, landmarks, w, h, options = {}) {
+    const labelMode = options.labelMode || 'off';
+    const model = createFaceMuscleModel(landmarks, w, h, {
+        mode: labelMode,
+        confidence: options.confidence,
+        isUncertain: options.isUncertain,
+        visibleBounds: options.visibleBounds,
+    });
+    if (!model.frame || !model.muscles.length) return { muscles: [] };
 
-    const foreheadTop = p(F.FOREHEAD_TOP);
-    const chin = p(F.CHIN);
-    const leftTemple = p(F.LEFT_TEMPLE);
-    const rightTemple = p(F.RIGHT_TEMPLE);
-    const nose = p(F.NOSE_TIP);
-    const faceHeight = dist(foreheadTop, chin);
-    const faceWidth = dist(leftTemple, rightTemple);
-    const centerX = (leftTemple.x + rightTemple.x) / 2;
+    const neckMuscles = model.muscles.filter(muscle => muscle.clipRegion === 'neck');
+    const facialMuscles = model.muscles.filter(muscle => muscle.clipRegion !== 'neck');
+    neckMuscles.forEach(muscle => drawFaceMuscleGeometry(ctx, muscle, model.frame));
 
-    // Frontalis (forehead)
-    ctx.globalAlpha = 0.5;
-    drawMuscleBundle(ctx, { x: centerX - faceWidth * 0.2, y: foreheadTop.y }, p(F.NOSE_BRIDGE), '#c03040', 12, 16);
-    drawMuscleBundle(ctx, { x: centerX + faceWidth * 0.2, y: foreheadTop.y }, p(F.NOSE_BRIDGE), '#c03040', 12, 16);
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    // Keep the estimated structures on the tracked facial surface. This avoids
+    // forehead spill into hair and masseter spill beyond the jaw silhouette.
+    roundedClosedPath(ctx, model.frame.faceContour);
+    ctx.clip();
+    facialMuscles.forEach(muscle => drawFaceMuscleGeometry(ctx, muscle, model.frame));
+    ctx.restore();
 
-    // Orbicularis oculi
-    ctx.globalAlpha = 0.45;
-    [LEFT_EYE_RING, RIGHT_EYE_RING].forEach(ring => {
-        const pts = ring.map(i => p(i));
-        const cx = pts.reduce((s, pt) => s + pt.x, 0) / pts.length;
-        const cy = pts.reduce((s, pt) => s + pt.y, 0) / pts.length;
-        const scaled = pts.map(pt => ({ x: cx + (pt.x - cx) * 1.4, y: cy + (pt.y - cy) * 1.3 }));
-        ctx.strokeStyle = '#c03040';
-        ctx.lineWidth = 5;
-        ctx.beginPath();
-        ctx.moveTo(scaled[0].x, scaled[0].y);
-        scaled.forEach(pt => ctx.lineTo(pt.x, pt.y));
-        ctx.closePath();
-        ctx.stroke();
+    drawFaceMuscleLabels(ctx, model.labels, model.mode, model.frame.bounds, {
+        left: Math.min(model.frame.point(234).x, model.frame.point(454).x),
+        right: Math.max(model.frame.point(234).x, model.frame.point(454).x),
+        top: model.frame.foreheadTop.y,
+        bottom: model.frame.chin.y,
+        centerX: model.frame.center.x,
     });
 
-    // Masseter
-    ctx.globalAlpha = 0.55;
-    drawMuscleBundle(ctx, leftTemple, p(F.LEFT_JAW), '#b82838', 14, 18);
-    drawMuscleBundle(ctx, rightTemple, p(F.RIGHT_JAW), '#b82838', 14, 18);
-
-    // Temporalis
-    ctx.globalAlpha = 0.4;
-    drawMuscleBundle(ctx, { x: leftTemple.x - faceWidth * 0.05, y: leftTemple.y - faceHeight * 0.1 },
-        leftTemple, '#a52535', 15, 10);
-    drawMuscleBundle(ctx, { x: rightTemple.x + faceWidth * 0.05, y: rightTemple.y - faceHeight * 0.1 },
-        rightTemple, '#a52535', 15, 10);
-
-    // Orbicularis oris
-    const mouthLeft = p(F.MOUTH_LEFT);
-    const mouthRight = p(F.MOUTH_RIGHT);
-    const mouthCx = (mouthLeft.x + mouthRight.x) / 2;
-    const mouthCy = (p(F.UPPER_LIP).y + p(F.LOWER_LIP).y) / 2;
-    ctx.globalAlpha = 0.45;
-    const mouthRx = dist(mouthLeft, mouthRight) * 0.55;
-    const mouthRy = dist(p(F.UPPER_LIP), p(F.LOWER_LIP)) * 0.7;
-    ctx.strokeStyle = '#c03040';
-    ctx.lineWidth = 5;
-    ctx.beginPath();
-    ctx.ellipse(mouthCx, mouthCy, mouthRx, mouthRy, 0, 0, Math.PI * 2);
-    ctx.stroke();
-
-    // Zygomaticus
-    ctx.globalAlpha = 0.5;
-    drawMuscleBundle(ctx, p(F.LEFT_CHEEK), mouthLeft, '#a52535', 5, 8);
-    drawMuscleBundle(ctx, p(F.RIGHT_CHEEK), mouthRight, '#a52535', 5, 8);
-
-    // Nasalis
-    drawMuscleBundle(ctx, p(F.NOSE_BRIDGE), nose, '#b82838', 4, 6);
-
-    // Depressor anguli oris
-    ctx.globalAlpha = 0.4;
-    drawMuscleBundle(ctx, mouthLeft, { x: chin.x - faceWidth * 0.1, y: chin.y }, '#a52535', 4, 6);
-    drawMuscleBundle(ctx, mouthRight, { x: chin.x + faceWidth * 0.1, y: chin.y }, '#a52535', 4, 6);
-
-    ctx.globalAlpha = 1;
-    drawLabel(ctx, 'Frontalis', foreheadTop, '#ff6680');
-    drawLabel(ctx, 'Orbicularis Oculi', p(F.LEFT_EYE_TOP), '#ff6680');
-    drawLabel(ctx, 'Temporalis', { x: leftTemple.x - 5, y: leftTemple.y - faceHeight * 0.06 }, '#ff6680');
-    drawLabel(ctx, 'Masseter', { x: leftTemple.x, y: (leftTemple.y + p(F.LEFT_JAW).y) / 2 }, '#ff6680');
-    drawLabel(ctx, 'Orbicularis Oris', { x: mouthCx, y: mouthCy }, '#ff6680');
-    drawLabel(ctx, 'Zygomaticus', p(F.LEFT_CHEEK), '#ff6680');
+    const hitTargets = model.muscles.map(muscle => ({
+        type: 'node',
+        center: muscle.labelAnchor,
+        radius: muscle.hitRadius,
+        name: muscle.displayName,
+        group: 'Facial muscle',
+        side: muscle.side,
+        segment: muscle.muscleType,
+        explanation: muscle.explanation,
+    }));
+    return { muscles: model.muscles, hitTargets };
 }
 
+function drawFaceMuscleGeometry(ctx, muscle, frame) {
+    const tone = faceMuscleTone(muscle);
+    if (muscle.muscleType === 'ring') {
+        drawFaceMuscleRing(ctx, muscle, tone, frame.scale);
+        return;
+    }
+    if (muscle.muscleType === 'ribbon') {
+        drawFacialMuscleRibbon(ctx, muscle.path, {
+            tone,
+            startWidth: muscle.widths.start,
+            midWidth: muscle.widths.middle,
+            endWidth: muscle.widths.end,
+            alpha: muscle.opacity,
+            fiberCount: muscle.displayName.length > 24 ? 3 : 4,
+        });
+        return;
+    }
+    drawFaceMusclePatch(ctx, muscle.points, {
+        tone,
+        alpha: muscle.opacity,
+        scale: frame.scale,
+        fiberA: muscle.fiberStart,
+        fiberB: muscle.fiberEnd,
+        fiberCount: muscle.fiberDirection === 'fan' ? 10 : 7,
+    });
+    if (muscle.fiberDirection === 'fan') {
+        drawFaceFanFibers(ctx, muscle, frame.scale);
+    }
+}
+
+function faceMuscleTone(muscle) {
+    if (muscle.group === 'jaw' || muscle.displayName === 'Temporalis') return 'mastication';
+    if (['forehead', 'nose'].includes(muscle.group)
+        && !muscle.displayName.startsWith('Frontalis')) return 'deep';
+    if (muscle.displayName.startsWith('Depressor') || muscle.displayName === 'Mentalis') return 'deep';
+    return 'superficial';
+}
+
+function drawFaceMuscleRing(ctx, muscle, tone, scale) {
+    const palette = FACE_MUSCLE_PALETTES[tone] || FACE_MUSCLE_PALETTES.superficial;
+    const center = averagePoints(muscle.outerPoints);
+    const extent = Math.max(...muscle.outerPoints.map(point => dist(point, center)));
+    const gradient = ctx.createRadialGradient(
+        center.x - extent * 0.18, center.y - extent * 0.16, extent * 0.06,
+        center.x, center.y, extent,
+    );
+    gradient.addColorStop(0, palette.light);
+    gradient.addColorStop(0.58, palette.mid);
+    gradient.addColorStop(1, palette.dark);
+
+    ctx.save();
+    ctx.globalAlpha *= muscle.opacity;
+    appendAnnularPath(ctx, muscle.outerPoints, muscle.innerPoints);
+    ctx.fillStyle = palette.shadow;
+    ctx.fill('evenodd');
+    appendAnnularPath(ctx, muscle.outerPoints, muscle.innerPoints);
+    ctx.fillStyle = gradient;
+    ctx.fill('evenodd');
+    ctx.strokeStyle = palette.edge;
+    ctx.lineWidth = Math.max(0.55, 0.72 * scale);
+    traceSmoothLoop(ctx, muscle.outerPoints);
+    ctx.stroke();
+
+    const fiberLoop = muscle.outerPoints.map(point => moveToward(point, center, 0.12));
+    ctx.globalAlpha *= 0.42;
+    ctx.strokeStyle = palette.fiber;
+    ctx.lineWidth = Math.max(0.36, 0.48 * scale);
+    traceSmoothLoop(ctx, fiberLoop);
+    ctx.stroke();
+    ctx.restore();
+}
+
+function drawFaceFanFibers(ctx, muscle, scale) {
+    if (!muscle.points || muscle.points.length < 4) return;
+    const palette = FACE_MUSCLE_PALETTES[faceMuscleTone(muscle)];
+    const insertion = muscle.fiberEnd;
+    const edge = muscle.points.slice(0, Math.max(3, Math.floor(muscle.points.length * 0.58)));
+    ctx.save();
+    ctx.globalAlpha *= muscle.opacity * 0.30;
+    ctx.strokeStyle = palette.fiber;
+    ctx.lineWidth = Math.max(0.35, 0.5 * scale);
+    edge.forEach((point, index) => {
+        if (index % 2 !== 0 && edge.length > 5) return;
+        const control = mid(point, insertion);
+        ctx.beginPath();
+        ctx.moveTo(point.x, point.y);
+        ctx.quadraticCurveTo(control.x, control.y, insertion.x, insertion.y);
+        ctx.stroke();
+    });
+    ctx.restore();
+}
+
+function drawFaceMusclePatch(ctx, points, options = {}) {
+    if (!points || points.length < 3) return;
+    const palette = FACE_MUSCLE_PALETTES[options.tone] || FACE_MUSCLE_PALETTES.superficial;
+    drawAnatomicalMuscleMass(ctx, points, {
+        light: palette.light,
+        mid: palette.mid,
+        dark: palette.dark,
+        alpha: options.alpha ?? 0.72,
+        scale: options.scale ?? 1,
+        shadowAlpha: 0.30,
+        strokeAlpha: 0.42,
+        feather: true,
+        featherAlpha: 0.24,
+        featherScale: 1.045,
+        featherColor: palette.shadow,
+        fiberA: options.fiberA,
+        fiberB: options.fiberB,
+        fiberCount: options.fiberCount ?? 7,
+        fiberSpread: Math.max(5, Math.max(...points.map(point => dist(point, averagePoints(points)))) * 0.58),
+    });
+}
+
+function drawFacialMuscleRibbon(ctx, points, options = {}) {
+    if (!points || points.length < 2) return;
+    const samples = sampleBezierSpline(points, 10);
+    const widths = createMuscleWidthProfile(
+        samples.length,
+        Math.max(1.2, options.startWidth ?? 3),
+        Math.max(2.1, options.midWidth ?? 7),
+        Math.max(1.1, options.endWidth ?? 2)
+    );
+    const palette = FACE_MUSCLE_PALETTES[options.tone] || FACE_MUSCLE_PALETTES.superficial;
+    const middleIndex = Math.floor(samples.length / 2);
+    const middle = samples[middleIndex];
+    const before = samples[Math.max(0, middleIndex - 1)];
+    const after = samples[Math.min(samples.length - 1, middleIndex + 1)];
+    const tangent = normalizeVector({ x: after.x - before.x, y: after.y - before.y }, { x: 0, y: -1 });
+    const normal = perpendicularVector(tangent);
+    const maxWidth = Math.max(...widths);
+    const crossShade = ctx.createLinearGradient(
+        middle.x + normal.x * maxWidth * 0.56,
+        middle.y + normal.y * maxWidth * 0.56,
+        middle.x - normal.x * maxWidth * 0.56,
+        middle.y - normal.y * maxWidth * 0.56,
+    );
+    crossShade.addColorStop(0, palette.dark);
+    crossShade.addColorStop(0.26, palette.mid);
+    crossShade.addColorStop(0.52, palette.light);
+    crossShade.addColorStop(0.76, palette.mid);
+    crossShade.addColorStop(1, palette.dark);
+
+    ctx.save();
+    ctx.globalAlpha *= options.alpha ?? 0.74;
+    drawTendonRibbon(ctx, samples, widths.map(width => width + 1.6), {
+        fill: palette.shadow,
+        offset: { x: 0.55, y: 0.85 },
+    });
+    drawTendonRibbon(ctx, samples, widths, {
+        fill: crossShade,
+        stroke: palette.edge,
+        lineWidth: 0.48,
+    });
+    drawTendonRibbon(ctx, samples, widths.map(width => Math.max(0.6, width * 0.13)), {
+        fill: palette.highlight,
+    });
+    drawTendonEdgeContour(ctx, samples, widths, palette.edge, 0.36);
+
+    const fiberCount = clamp(options.fiberCount ?? 4, 2, 7);
+    for (let index = 0; index < fiberCount; index++) {
+        const fraction = fiberCount === 1 ? 0 : (index / (fiberCount - 1) - 0.5) * 0.58;
+        const fiberSamples = offsetRibbonSamples(samples, widths, fraction);
+        drawTendonCenterHighlight(
+            ctx,
+            fiberSamples,
+            Math.max(0.28, maxWidth * 0.028),
+            palette.fiber,
+        );
+    }
+    ctx.restore();
+}
+
+function offsetRibbonSamples(samples, widths, fraction) {
+    return samples.map((point, index) => {
+        const before = samples[Math.max(0, index - 1)];
+        const after = samples[Math.min(samples.length - 1, index + 1)];
+        const tangent = normalizeVector({ x: after.x - before.x, y: after.y - before.y }, { x: 0, y: -1 });
+        const normal = perpendicularVector(tangent);
+        return {
+            x: point.x + normal.x * widths[index] * fraction,
+            y: point.y + normal.y * widths[index] * fraction,
+        };
+    });
+}
+
+function appendAnnularPath(ctx, outer, inner) {
+    ctx.beginPath();
+    appendSmoothLoop(ctx, outer);
+    appendSmoothLoop(ctx, [...inner].reverse());
+}
+
+function traceSmoothLoop(ctx, points) {
+    ctx.beginPath();
+    appendSmoothLoop(ctx, points);
+}
+
+function appendSmoothLoop(ctx, points) {
+    const firstMid = mid(points[points.length - 1], points[0]);
+    ctx.moveTo(firstMid.x, firstMid.y);
+    points.forEach((point, index) => {
+        const next = points[(index + 1) % points.length];
+        const nextMid = mid(point, next);
+        ctx.quadraticCurveTo(point.x, point.y, nextMid.x, nextMid.y);
+    });
+    ctx.closePath();
+}
+
+function drawFaceMuscleLabels(ctx, labels, labelMode, bounds, faceRegion) {
+    if (labelMode === 'off') return;
+    drawSmartLabels(ctx, labels, bounds, {
+        maxLabels: labelMode === 'simple' ? 6 : (faceRegion.right - faceRegion.left > 380 ? 14 : 11),
+        theme: 'medical',
+        fontSize: labelMode === 'simple' ? 11 : 10,
+        keepLeadersShort: true,
+        outwardFromCenter: true,
+        preferRegionEdge: true,
+        avoidRegion: {
+            left: faceRegion.left - (faceRegion.right - faceRegion.left) * 0.08,
+            right: faceRegion.right + (faceRegion.right - faceRegion.left) * 0.08,
+            top: faceRegion.top,
+            bottom: faceRegion.bottom,
+            centerX: faceRegion.centerX,
+        },
+    });
+}

@@ -1,5 +1,17 @@
 # React + Vite
 
+## Running locally
+
+Run the local scanner frontend:
+
+```bash
+npm run dev
+```
+
+Open the Vite URL, usually `http://localhost:5173`.
+
+The scanner is local-first and does not require an API key.
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
 Currently, two official plugins are available:

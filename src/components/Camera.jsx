@@ -23,7 +23,7 @@ const Camera = forwardRef(function Camera({ active, onError, filterClass }, ref)
             return canvas.toDataURL('image/jpeg', 0.85);
         },
         // Visible capture — crops to what the user actually sees (object-fit: cover)
-        // Claude's returned % coordinates will then map directly to the SVG overlay
+        // Returned % coordinates will then map directly to the SVG overlay
         captureVisible: () => {
             const video = videoRef.current;
             if (!video || !video.videoWidth) return null;
