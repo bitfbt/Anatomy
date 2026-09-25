@@ -42,6 +42,7 @@ export default function App() {
   const [muscleSide, setMuscleSide] = useState('palm');
   const [error, setError] = useState(null);
   const [cameraError, setCameraError] = useState(false);
+  const [cameraErrorMessage, setCameraErrorMessage] = useState(null);
   const [cameraFacing, setCameraFacing] = useState('environment');
   const [cameraSwitching, setCameraSwitching] = useState(false);
   const [detectedParts, setDetectedParts] = useState([]);
@@ -124,11 +125,13 @@ export default function App() {
     clearTrackingDisplay();
   }, [clearTrackingDisplay]);
 
-  const handleCameraError = useCallback(() => {
+  const handleCameraError = useCallback((error) => {
     lifecycleRef.current.cancelScan();
     clearTrackingDisplay();
     setCameraSwitching(false);
     cameraErrorRef.current = true;
+    const isPermissionError = error?.name === 'NotAllowedError' || error?.name === 'SecurityError';
+    setCameraErrorMessage(isPermissionError ? null : 'AnatomyLens could not start the camera. Close other apps using the camera, then retry.');
     setCameraError(true);
     setState('idle');
   }, [clearTrackingDisplay]);
@@ -139,6 +142,7 @@ export default function App() {
     setCameraSwitching(state !== 'idle');
     cameraErrorRef.current = false;
     setCameraError(false);
+    setCameraErrorMessage(null);
     setCameraFacing(current => current === 'user' ? 'environment' : 'user');
   }, [state, clearTrackingDisplay]);
 
@@ -799,6 +803,13 @@ export default function App() {
     }
   }, [startTracking, clearTrackingDisplay]);
 
+  const handleCameraRetry = useCallback(() => {
+    cameraErrorRef.current = false;
+    setCameraError(false);
+    setCameraErrorMessage(null);
+    void handleScan();
+  }, [handleScan]);
+
   const handleRescan = useCallback(() => {
     lifecycleRef.current.cancelScan();
     clearTrackingDisplay();
@@ -953,7 +964,7 @@ export default function App() {
         </div>
       )}
 
-      {cameraError && <ErrorFallback type="camera" />}
+      {cameraError && <ErrorFallback type="camera" message={cameraErrorMessage} onRetry={handleCameraRetry} />}
       {cameraError && <CameraSwitch facingMode={cameraFacing} onSwitch={handleCameraSwitch} idle />}
       {error && <ErrorFallback type="tracker-error" message={error} onRetry={handleScan} />}
 

@@ -1,12 +1,23 @@
+import { Capacitor } from '@capacitor/core';
+
 export default function ErrorFallback({ type, message, onRetry }) {
     if (type === 'camera') {
+        const platform = Capacitor.getPlatform();
+        const isNative = Capacitor.isNativePlatform();
+        const cameraCopy = isNative
+            ? platform === 'ios'
+                ? 'Allow camera access in iPhone Settings under Privacy & Security → Camera → AnatomyLens, then return and try again. If AnatomyLens is not listed, tap Retry and allow access when iPhone asks.'
+                : 'Allow camera access for AnatomyLens in your device settings, then return and try again.'
+            : 'Allow camera access for AnatomyLens in your browser’s site settings, then reload or retry.';
+
         return (
             <div className="error-container">
                 <div className="error-icon">📷</div>
-                <div className="error-title">Camera Access Denied</div>
+                <div className="error-title">Camera Permission Needed</div>
                 <div className="error-msg">
-                    {message || 'Unable to access your camera. Please grant camera permission in your browser settings, then retry.'}
+                    {message || cameraCopy}
                 </div>
+                {onRetry && <button className="upload-btn" onClick={onRetry}>↻ Retry</button>}
             </div>
         );
     }
