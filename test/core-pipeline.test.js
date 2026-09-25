@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { drawFaceMuscles, drawHandMuscles, drawStylizedHandBones } from '../src/services/anatomyRenderer.js';
+import { drawFaceSkull, drawFaceMuscles, drawHandMuscles, drawStylizedHandBones } from '../src/services/anatomyRenderer.js';
 import { ANATOMY_MODES, createHandSkeletonModel, findNearestBone, getLabelsForMode, getWristBones } from '../src/services/handModel.js';
 import { LandmarkSmoother } from '../src/services/landmarkSmoothing.js';
 import { validateHandForRendering } from '../src/services/handValidation.js';
 import { validateFaceForRendering } from '../src/services/faceValidation.js';
 import { FACE_MUSCLE_DEFINITIONS, createFaceMuscleModel } from '../src/services/faceMuscleModel.js';
+import { FACIAL_BONES, SKULL_PALETTE, createFaceSkeleton } from '../src/services/faceSkeleton.js';
 
 const CANVAS_WIDTH = 1280;
 const CANVAS_HEIGHT = 720;
@@ -89,20 +90,112 @@ test('accepts a complete, in-frame hand and reports uncertainty separately', () 
     assert.equal(uncertain.uncertain, true);
 });
 
-test('rejects invalid, low-confidence, and clipped hand landmark sets', () => {
+test('rejects invalid and mostly off-screen hands without rejecting uncertain handedness', () => {
     const landmarks = openHandLandmarks();
     const invalid = openHandLandmarks();
     invalid[7].x = Number.NaN;
-    const clipped = openHandLandmarks();
-    clipped[8].x = 1.02;
+    const clipped = openHandLandmarks().map(point => ({ ...point, x: point.x + 0.65 }));
     const nearEdge = openHandLandmarks();
     nearEdge[12].y = 0.035;
 
     assert.equal(validateHandForRendering([], 0.9, CANVAS_WIDTH, CANVAS_HEIGHT, VISIBLE_BOUNDS).reason, 'No 21 landmarks detected');
     assert.equal(validateHandForRendering(invalid, 0.9, CANVAS_WIDTH, CANVAS_HEIGHT, VISIBLE_BOUNDS).reason, 'Landmarks invalid');
-    assert.equal(validateHandForRendering(landmarks, 0.45, CANVAS_WIDTH, CANVAS_HEIGHT, VISIBLE_BOUNDS).reason, 'Confidence below threshold');
+    assert.equal(validateHandForRendering(landmarks, 0.45, CANVAS_WIDTH, CANVAS_HEIGHT, VISIBLE_BOUNDS).valid, true);
     assert.equal(validateHandForRendering(clipped, 0.9, CANVAS_WIDTH, CANVAS_HEIGHT, VISIBLE_BOUNDS).reason, 'Hand partly outside frame');
-    assert.equal(validateHandForRendering(nearEdge, 0.9, CANVAS_WIDTH, CANVAS_HEIGHT, VISIBLE_BOUNDS).reason, 'Move hand fully into frame');
+    const edgeResult = validateHandForRendering(nearEdge, 0.9, CANVAS_WIDTH, CANVAS_HEIGHT, VISIBLE_BOUNDS);
+    assert.equal(edgeResult.valid, true);
+    assert.equal(edgeResult.uncertain, true);
+    assert.match(edgeResult.warning, /fingertips/);
+});
+
+test('keeps tracking through a clipped fingertip, close-up hand, and smaller hand', () => {
+    const fingertip = openHandLandmarks();
+    fingertip[12].y = -0.005;
+    const closeUp = openHandLandmarks().map(point => ({ ...point, y: 0.5 + (point.y - 0.475) * 1.15 }));
+    const small = openHandLandmarks().map(point => ({ ...point, x: 0.5 + (point.x - 0.5) * 0.09, y: 0.5 + (point.y - 0.5) * 0.09 }));
+    for (const landmarks of [fingertip, closeUp, small]) {
+        assert.equal(validateHandForRendering(landmarks, 0.9, CANVAS_WIDTH, CANVAS_HEIGHT, VISIBLE_BOUNDS).valid, true);
+    }
+    const degenerate = Array.from({ length: 21 }, () => ({ x: 0.5, y: 0.5, z: 0 }));
+    assert.equal(validateHandForRendering(degenerate, 0.99, CANVAS_WIDTH, CANVAS_HEIGHT, VISIBLE_BOUNDS).valid, false);
+});
+
+test('retains close-up labels with cropped fingertips but stops when the palm leaves view', () => {
+    const zoom = factor => openHandLandmarks().map(point => ({
+        ...point,
+        x: 0.5 + (point.x - 0.5) * factor,
+        y: 0.5 + (point.y - 0.62) * factor,
+    }));
+    const closeUp = zoom(1.6);
+    const result = validateHandForRendering(closeUp, 0.94, CANVAS_WIDTH, CANVAS_HEIGHT, VISIBLE_BOUNDS);
+    assert.equal(result.valid, true);
+    assert.equal(result.uncertain, true);
+    const ctx = createMockContext();
+    drawStylizedHandBones(ctx, closeUp, CANVAS_WIDTH, CANVAS_HEIGHT, {
+        labelMode: 'clean', wristMode: 'simple', visibleBounds: VISIBLE_BOUNDS,
+    });
+    assert.ok(ctx.__drawnLabels.length > 0);
+    const extreme = validateHandForRendering(zoom(4), 0.94, CANVAS_WIDTH, CANVAS_HEIGHT, VISIBLE_BOUNDS);
+    assert.equal(extreme.valid, false);
+    assert.equal(extreme.blocksGrace, true);
+    const offscreenPalm = closeUp.map(point => ({ ...point, y: point.y + 0.6 }));
+    assert.equal(validateHandForRendering(offscreenPalm, 0.94, CANVAS_WIDTH, CANVAS_HEIGHT, VISIBLE_BOUNDS).valid, false);
+});
+
+test('renders facial skeleton, gates labels, and follows moved jaw landmarks', () => {
+    const face = frontFaceLandmarks();
+    for (const labelMode of ['off', 'clean', 'detailed']) {
+        const ctx = createMockContext();
+        const result = drawFaceSkull(ctx, face, CANVAS_WIDTH, CANVAS_HEIGHT, { labelMode, visibleBounds: VISIBLE_BOUNDS });
+        assert.equal(result.hitTargets.filter(b => b.group === 'Facial bone' || b.deep).length, labelMode === 'detailed' ? 14 : 12);
+        assert.equal(ctx.__drawnLabels.length > 0, labelMode !== 'off');
+        assert.ok(result.hitTargets.every(target => Number.isFinite(target.center.x) && Number.isFinite(target.center.y)));
+    }
+    face[152].y += 0.05;
+    const moved = drawFaceSkull(createMockContext(), face, CANVAS_WIDTH, CANVAS_HEIGHT);
+    assert.equal(moved.hitTargets.find(target => target.name === 'Mandible').center.y, face[152].y * CANVAS_HEIGHT);
+    assert.deepEqual(drawFaceSkull(createMockContext(), [], CANVAS_WIDTH, CANVAS_HEIGHT).hitTargets, []);
+});
+
+test('facial inventory contains 14 bones, with explicit deep cutaway and pose-following geometry', () => {
+    assert.equal(FACIAL_BONES.length, 14);
+    assert.equal(new Set(FACIAL_BONES.map(b => b.id)).size, 14);
+    for (const kind of ['maxilla','zygomatic','nasal','lacrimal','concha','palatine']) {
+        assert.equal(FACIAL_BONES.filter(b => b.kind === kind).length, 2);
+    }
+    const face = frontFaceLandmarks();
+    const original = createFaceSkeleton(face, CANVAS_WIDTH, CANVAS_HEIGHT);
+    const angle = .3, dx = 13, dy = 21;
+    const transformed = face.map(p => {
+        const x=p.x*CANVAS_WIDTH, y=p.y*CANVAS_HEIGHT;
+        return {...p,x:(x*Math.cos(angle)-y*Math.sin(angle)+dx)/CANVAS_WIDTH,
+            y:(x*Math.sin(angle)+y*Math.cos(angle)+dy)/CANVAS_HEIGHT};
+    });
+    const rotated = createFaceSkeleton(transformed,CANVAS_WIDTH,CANVAS_HEIGHT);
+    original.bones.forEach((bone,i) => bone.points.forEach((p,j) => {
+        const actual=rotated.bones[i].points[j];
+        assert.ok(Math.abs(actual.x-(p.x*Math.cos(angle)-p.y*Math.sin(angle)+dx))<.001);
+        assert.ok(Math.abs(actual.y-(p.x*Math.sin(angle)+p.y*Math.cos(angle)+dy))<.001);
+    }));
+    const detailed=drawFaceSkull(createMockContext(),face,CANVAS_WIDTH,CANVAS_HEIGHT,{labelMode:'detailed'});
+    assert.equal(detailed.hitTargets.filter(b=>b.deep).length,2);
+    assert.ok(detailed.labels.some(label=>label.text.includes('cutaway')));
+    const closed=face.map(p=>({...p}));
+    closed[159].y=closed[145].y;
+    assert.deepEqual(createFaceSkeleton(closed,CANVAS_WIDTH,CANVAS_HEIGHT).sockets,original.sockets);
+});
+
+test('atlas detail labels every structure and distinguishes facial bones, cranial bones and features', () => {
+    const ctx=createMockContext();
+    const result=drawFaceSkull(ctx,frontFaceLandmarks(),CANVAS_WIDTH,CANVAS_HEIGHT,{labelMode:'detailed',visibleBounds:VISIBLE_BOUNDS});
+    assert.equal(ctx.__drawnLabels.length,result.labels.length);
+    for(const name of ['Coronal suture','Optic canal','Superior orbital fissure','Mental foramen']) {
+        assert.ok(ctx.__drawnLabels.includes(name));
+    }
+    for(const kind of ['frontal','parietal','temporal','sphenoid','ethmoid']) {
+        assert.ok(result.hitTargets.some(b=>b.kind===kind&&b.group==='Cranial bone'));
+    }
+    assert.equal(new Set(['frontal','maxilla','zygomatic','mandible'].map(k=>SKULL_PALETTE[k][1])).size,4);
 });
 
 test('accepts a complete front-facing face and rejects clipped face landmarks', () => {
@@ -155,6 +248,25 @@ test('renders skeleton modes without exceptions and exposes bone hit targets', (
                 visibleBounds: VISIBLE_BOUNDS,
             });
             assert.ok(result.bones.length >= 25);
+        }
+    }
+});
+
+test('labels all eight wrist bones and exposes each letter as its named tap target', () => {
+    for (const wristMode of ['simple', 'detailed']) {
+        const ctx = createMockContext();
+        const result = drawStylizedHandBones(ctx, openHandLandmarks(), CANVAS_WIDTH, CANVAS_HEIGHT, {
+            labelMode: 'off', wristMode, visibleBounds: VISIBLE_BOUNDS,
+        });
+        assert.deepEqual(ctx.__drawnLabels, ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']);
+        const markers = result.bones.filter(bone => bone.id.startsWith('letter-carpal-'));
+        assert.equal(markers.length, 8);
+        assert.ok(markers.every(bone => bone.name.startsWith(`${bone.letter} · `)));
+        assert.equal(result.bones.some(bone => bone.id === 'carpals'), false,
+            'a generic cluster must not steal taps from the named bones');
+        for (const marker of markers) {
+            assert.ok(marker.center.x >= VISIBLE_BOUNDS.left && marker.center.x <= VISIBLE_BOUNDS.right);
+            assert.ok(marker.center.y >= VISIBLE_BOUNDS.top && marker.center.y <= VISIBLE_BOUNDS.bottom);
         }
     }
 });
@@ -215,7 +327,8 @@ test('renders palm and back muscle modes without exceptions', () => {
                 confidence: 0.94,
                 visibleBounds: VISIBLE_BOUNDS,
             });
-            assert.deepEqual(result, { muscles: [] });
+            assert.deepEqual(result.muscles, []);
+            assert.equal(result.hitTargets.length > 0, labelMode !== 'off');
         }
     }
 });
@@ -372,7 +485,7 @@ test('keeps bone and muscle labels correctly gated by their selected modes', () 
         'Middle phalanx',
         'Proximal phalanx',
         'Metacarpals',
-        'Carpals',
+        'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
     ]);
 
     const musclesOff = createMockContext();
@@ -407,7 +520,7 @@ test('keeps bone and muscle labels correctly gated by their selected modes', () 
         visibleBounds: VISIBLE_BOUNDS,
     });
     assert.ok(musclesDetailed.__drawnLabels.includes('Flexor tendon paths'));
-    assert.ok(musclesDetailed.__drawnLabels.includes('Thenar muscles'));
+    assert.ok(musclesDetailed.__drawnLabels.includes('Abductor pollicis brevis'));
     assert.ok(musclesDetailed.__drawnLabels.includes('Palmar interossei'));
-    assert.ok(musclesDetailed.__drawnLabels.length <= 6, 'detailed mode must shed lower-priority labels when crowded');
+    assert.ok(musclesDetailed.__drawnLabels.length <= 12, 'detailed mode must shed lower-priority labels when crowded');
 });

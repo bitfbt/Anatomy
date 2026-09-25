@@ -2,8 +2,8 @@ import { HAND } from './handLandmarks.js';
 
 export const HAND_TRACKING_THRESHOLDS = {
     strongConfidence: 0.70,
-    minAcceptedConfidence: 0.55,
     edgeMarginPx: 18,
+    minVisibleRatio: 0.35,
 };
 
 export function hasInvalidLandmarks(landmarks) {
@@ -60,43 +60,45 @@ export function validateHandForRendering(landmarks, confidence, drawW, drawH, vi
         HAND.RING_TIP,
         HAND.PINKY_TIP,
     ];
-    const importantClipped = importantLandmarkIds.some((index) => {
+    const importantClippedCount = importantLandmarkIds.filter((index) => {
         const point = bounds.points[index];
         return point.x < visibleBounds.left - 4
             || point.x > visibleBounds.right + 4
             || point.y < visibleBounds.top - 4
             || point.y > visibleBounds.bottom + 4;
-    });
-    const tooSmall = bounds.width < visibleW * 0.055 || bounds.height < visibleH * 0.10;
-    const tooLarge = bounds.width > visibleW * 0.88 || bounds.height > visibleH * 0.94;
+    }).length;
+    const tooSmall = Math.max(bounds.width, bounds.height) < Math.min(visibleW, visibleH) * 0.04
+        || Math.min(bounds.width, bounds.height) < 4;
+    const visiblePalmPoints = [HAND.INDEX_MCP, HAND.MIDDLE_MCP, HAND.RING_MCP, HAND.PINKY_MCP]
+        .filter(index => {
+            const point = bounds.points[index];
+            return point.x >= visibleBounds.left && point.x <= visibleBounds.right
+                && point.y >= visibleBounds.top && point.y <= visibleBounds.bottom;
+        }).length;
 
-    // A hand can still have a high detector score while its wrist or fingertips
-    // are pressed against the visible crop. Do not render a partial anatomy
-    // overlay in that case; it is more misleading than a short pause.
-    if (visibleRatio < 0.80 || importantClipped || edgeTooClose) {
+    // Close-ups can crop several fingertips while leaving a useful palm view.
+    // Keep the overlay until most of the hand or its palm is outside the view.
+    if (visibleRatio < HAND_TRACKING_THRESHOLDS.minVisibleRatio || visiblePalmPoints < 2) {
         return {
             valid: false,
-            reason: visibleRatio < 0.80 || importantClipped
-                ? 'Hand partly outside frame'
-                : 'Move hand fully into frame',
+            reason: 'Hand partly outside frame',
             blocksGrace: true,
             bounds,
             visibleRatio,
         };
     }
     if (tooSmall) return { valid: false, reason: 'Open hand for better tracking', blocksGrace: false, bounds, visibleRatio };
-    if (tooLarge) return { valid: false, reason: 'Move hand farther away', blocksGrace: true, bounds, visibleRatio };
-    if (confidence < HAND_TRACKING_THRESHOLDS.minAcceptedConfidence) {
-        return { valid: false, reason: 'Confidence below threshold', blocksGrace: false, bounds, visibleRatio };
-    }
+    // MediaPipe's handedness score classifies left versus right; it is not
+    // landmark presence confidence. The detector already gates hand presence.
+    const nearEdge = edgeTooClose || importantClippedCount > 0;
 
     return {
         valid: true,
-        uncertain: confidence < HAND_TRACKING_THRESHOLDS.strongConfidence,
+        uncertain: nearEdge || confidence < HAND_TRACKING_THRESHOLDS.strongConfidence,
         reason: confidence < HAND_TRACKING_THRESHOLDS.strongConfidence
             ? 'Detection uncertain'
             : 'valid',
-        warning: null,
+        warning: nearEdge ? 'Keep fingertips and wrist in view for a complete overlay.' : null,
         blocksGrace: false,
         bounds,
         visibleRatio,

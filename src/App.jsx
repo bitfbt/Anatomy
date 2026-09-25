@@ -1,51 +1,35 @@
+import { ForearmTracker } from './services/forearmTracking';
+import { alignForearmToHand } from './services/forearmAlignment';
+import { ForearmPlacement } from './services/forearmPlacement';
+import ForearmControls from './components/ForearmControls';
+import { drawForearm, drawForearmLabels } from './services/forearmAnatomy';
+import { drawBodyAnatomy } from './services/bodyAnatomy';
 import { useState, useRef, useCallback, useEffect } from 'react';
 import Camera from './components/Camera';
 import ScanOverlay from './components/ScanOverlay';
 import HUD from './components/HUD';
+import WristLegend from './components/WristLegend';
 import ScanButton from './components/ScanButton';
 import ErrorFallback from './components/ErrorFallback';
-import { initTrackers, detectFaces, detectHands } from './services/handTracker';
-import { drawFaceMuscles, drawHandMuscles, drawStylizedHandBones } from './services/anatomyRenderer';
+import { initTrackers, detectFaces, detectHands, detectBody } from './services/handTracker';
+import { drawFaceSkull, drawFaceMuscles, drawHandMuscles, drawStylizedHandBones, drawTrackedFingerAnatomy } from './services/anatomyRenderer';
 import { LandmarkSmoother } from './services/landmarkSmoothing';
+import { HandContinuityTracker } from './services/handContinuity';
+import { FingerContinuityTracker, FingerFrameSampler } from './services/fingerContinuity';
 import { CAMERA_CONFIG } from './services/handAnatomyData';
 import { HAND_TRACKING_THRESHOLDS, validateHandForRendering } from './services/handValidation';
 import { validateFaceForRendering } from './services/faceValidation';
+import { findAnatomyHit } from './services/anatomyHitTesting';
+import CameraSwitch from './components/CameraSwitch';
+import { createTrackingLifecycle } from './services/trackingLifecycle';
 
 const LOST_HAND_GRACE_MS = 500;
 const STALE_FADE_START_MS = 300;
-const FRAME_INTERVAL_MS = 33;
 const STRONG_CONFIDENCE = HAND_TRACKING_THRESHOLDS.strongConfidence;
 const IS_DEV = import.meta.env?.DEV ?? false;
 // The camera element is not mirrored in CSS. Keep the HUD and handedness
 // messaging consistent with the same source of truth used by anatomy data.
 const IS_MIRRORED_CAMERA = CAMERA_CONFIG.isMirroredCamera;
-
-function distanceToSegment(point, a, b) {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const lengthSq = dx * dx + dy * dy;
-  if (lengthSq === 0) return Math.hypot(point.x - a.x, point.y - a.y);
-  const t = Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSq));
-  const x = a.x + t * dx;
-  const y = a.y + t * dy;
-  return Math.hypot(point.x - x, point.y - y);
-}
-
-function findBoneHit(point, bones) {
-  let best = null;
-  let bestDistance = Infinity;
-  bones.forEach((bone) => {
-    const distance = bone.type === 'node'
-      ? Math.hypot(point.x - bone.center.x, point.y - bone.center.y)
-      : distanceToSegment(point, bone.from, bone.to);
-    const threshold = bone.type === 'node' ? bone.radius : bone.radius;
-    if (distance <= threshold && distance < bestDistance) {
-      best = bone;
-      bestDistance = distance;
-    }
-  });
-  return best;
-}
 
 // States: idle | loading | active
 export default function App() {
@@ -58,15 +42,19 @@ export default function App() {
   const [muscleSide, setMuscleSide] = useState('palm');
   const [error, setError] = useState(null);
   const [cameraError, setCameraError] = useState(false);
+  const [cameraFacing, setCameraFacing] = useState('environment');
+  const [cameraSwitching, setCameraSwitching] = useState(false);
   const [detectedParts, setDetectedParts] = useState([]);
   const [trackingInfo, setTrackingInfo] = useState(null);
   const [hoveredBone, setHoveredBone] = useState(null);
   const [pinnedBone, setPinnedBone] = useState(null);
   const [tooltipPoint, setTooltipPoint] = useState(null);
+  const [aligningElbow, setAligningElbow] = useState(false);
 
   const cameraRef = useRef(null);
   const canvasRef = useRef(null);
-  const animFrameRef = useRef(null);
+  const lifecycleRef = useRef(createTrackingLifecycle());
+  const modelsReadyRef = useRef(false);
   const cameraErrorRef = useRef(false);
   const anatomyTargetRef = useRef('hand');
   const layerRef = useRef('skeleton');
@@ -76,6 +64,13 @@ export default function App() {
   const muscleSideRef = useRef('palm');
   const boneHitTargetsRef = useRef([]);
   const smootherRef = useRef(new LandmarkSmoother());
+  const handContinuityRef = useRef(new HandContinuityTracker());
+  const fingerContinuityRef = useRef(new FingerContinuityTracker());
+  const fingerFrameSamplerRef = useRef(new FingerFrameSampler());
+  const forearmTrackerRef = useRef(new ForearmTracker());
+  const forearmPlacementRef = useRef(new ForearmPlacement());
+  const forearmCandidatesRef = useRef([]);
+  const aligningElbowRef = useRef(false);
   const viewportTransformRef = useRef({ offsetX: 0, offsetY: 0 });
   const lastValidHandAtRef = useRef(null);
   const lastValidLandmarksRef = useRef(null);
@@ -89,56 +84,137 @@ export default function App() {
   useEffect(() => { muscleLabelModeRef.current = muscleLabelMode; }, [muscleLabelMode]);
   useEffect(() => { muscleSideRef.current = muscleSide; }, [muscleSide]);
 
-  const handleCameraError = useCallback(() => {
-    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-    animFrameRef.current = null;
-    cameraErrorRef.current = true;
+  const resetEphemeralState = useCallback(() => {
+    smootherRef.current.reset();
+    handContinuityRef.current.reset();
+    fingerContinuityRef.current.reset();
+    fingerFrameSamplerRef.current.reset();
+    forearmTrackerRef.current.reset();
+    forearmPlacementRef.current.reset();
+    forearmCandidatesRef.current = [];
+    boneHitTargetsRef.current = [];
+    lastValidHandAtRef.current = null;
+    lastValidLandmarksRef.current = null;
+    lastValidHandMetaRef.current = null;
+    aligningElbowRef.current = false;
     const canvas = canvasRef.current;
     if (canvas) canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
-    boneHitTargetsRef.current = [];
-    setCameraError(true);
-    setState('idle');
-    setDetectedParts([]);
-    setTrackingInfo(null);
-    setHoveredBone(null);
-    setPinnedBone(null);
   }, []);
 
+  const clearTrackingDisplay = useCallback(() => {
+    resetEphemeralState();
+    setAligningElbow(false);
+    setHoveredBone(null);
+    setPinnedBone(null);
+    setTooltipPoint(null);
+    setTrackingInfo(null);
+    setDetectedParts([]);
+  }, [resetEphemeralState]);
+
+  useEffect(() => {
+    const lifecycle = lifecycleRef.current;
+    return () => {
+      lifecycle.cancelScan();
+      resetEphemeralState();
+    };
+  }, [resetEphemeralState]);
+
+  const handleCameraReleased = useCallback(() => {
+    lifecycleRef.current.stopLoop();
+    clearTrackingDisplay();
+  }, [clearTrackingDisplay]);
+
+  const handleCameraError = useCallback(() => {
+    lifecycleRef.current.cancelScan();
+    clearTrackingDisplay();
+    setCameraSwitching(false);
+    cameraErrorRef.current = true;
+    setCameraError(true);
+    setState('idle');
+  }, [clearTrackingDisplay]);
+
+  const handleCameraSwitch = useCallback(() => {
+    lifecycleRef.current.stopLoop();
+    clearTrackingDisplay();
+    setCameraSwitching(state !== 'idle');
+    cameraErrorRef.current = false;
+    setCameraError(false);
+    setCameraFacing(current => current === 'user' ? 'environment' : 'user');
+  }, [state, clearTrackingDisplay]);
+
   const startTracking = useCallback(() => {
-    if (cameraErrorRef.current) return;
+    const lifecycle = lifecycleRef.current;
+    if (cameraErrorRef.current || !modelsReadyRef.current || !lifecycle.isActive() || lifecycle.isRunning()) return;
     const video = cameraRef.current?.getVideoElement();
     const canvas = canvasRef.current;
-    if (!video || !canvas) {
-      console.warn('tracking start skipped', { hasVideo: !!video, hasCanvas: !!canvas });
-      return;
-    }
-    console.log('tracking loop started');
+    if (!video?.srcObject || !canvas) return;
     const ctx = canvas.getContext('2d');
-    let lastTimestamp = 0;
+    let lastVideoTime = -1;
+    let lastVideoStream = null;
+    let lastSurface = '';
+    const trackingFrame = document.createElement('canvas');
+    const trackingContext = trackingFrame.getContext('2d', {alpha:false});
+    const owner = lifecycle.startLoop(() => {
+      trackingFrame.width = 0;
+      trackingFrame.height = 0;
+      lastVideoStream = null;
+    });
+    if (!owner) return;
 
     function trackFrame() {
-      if (!video.videoWidth) {
-        animFrameRef.current = requestAnimationFrame(trackFrame);
+      if (!owner.isCurrent()) return;
+      if (!video.srcObject || !video.videoWidth || video.readyState < 2 || video.currentTime === lastVideoTime) {
+        owner.schedule(trackFrame);
         return;
       }
 
       const now = performance.now();
-      // Throttle to ~30fps to avoid MediaPipe timestamp issues
-      if (now - lastTimestamp < FRAME_INTERVAL_MS) {
-        animFrameRef.current = requestAnimationFrame(trackFrame);
-        return;
+      lastVideoTime = video.currentTime;
+      if (lastVideoStream !== video.srcObject) {
+        smootherRef.current.reset();
+        handContinuityRef.current.reset();
+        fingerContinuityRef.current.reset();
+        forearmTrackerRef.current.reset();
+        forearmPlacementRef.current.reset();
+        forearmCandidatesRef.current = [];
+        aligningElbowRef.current = false;
+        setAligningElbow(false);
+        lastVideoStream = video.srcObject;
       }
-      lastTimestamp = now;
 
       // Render at viewport dimensions so the overlay aligns with the CSS-displayed
       // video (object-fit:cover). Raw videoWidth/videoHeight would stretch the canvas.
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
+      const surface = canvas.getBoundingClientRect();
+      const vw = Math.round(surface.width);
+      const vh = Math.round(surface.height);
+      if (vw < 1 || vh < 1) {
+        owner.schedule(trackFrame);
+        return;
+      }
+      const surfaceKey = `${vw}:${vh}:${video.videoWidth}:${video.videoHeight}`;
+      if (surfaceKey !== lastSurface) {
+        smootherRef.current.reset();
+        forearmTrackerRef.current.reset();
+        forearmPlacementRef.current.reset();
+        forearmCandidatesRef.current = [];
+        aligningElbowRef.current = false;
+        setAligningElbow(false);
+        handContinuityRef.current.reset();
+        fingerContinuityRef.current.reset();
+        lastSurface = surfaceKey;
+      }
       if (canvas.width !== vw || canvas.height !== vh) {
         canvas.width = vw;
         canvas.height = vh;
       }
       ctx.clearRect(0, 0, canvas.width, canvas.height);
+      // Both landmark models and image motion see the same captured pixels.
+      // Reading the live video twice can pair landmarks from different frames.
+      if (trackingFrame.width !== video.videoWidth || trackingFrame.height !== video.videoHeight) {
+        trackingFrame.width = video.videoWidth;
+        trackingFrame.height = video.videoHeight;
+      }
+      trackingContext.drawImage(video, 0, 0);
       let canvasCleared = true;
       let renderSkeletonCalled = false;
 
@@ -164,10 +240,36 @@ export default function App() {
       ctx.translate(-offsetX, -offsetY);
       viewportTransformRef.current = { offsetX, offsetY };
 
+      if (anatomyTargetRef.current === 'body') {
+        const raw = detectBody(trackingFrame, now)?.landmarks?.[0];
+        let result = { count: 0, partial: true };
+        if (raw?.length === 33) {
+          const smoothed = smootherRef.current.smooth('body-0', raw, now);
+          result = drawBodyAnatomy(ctx, smoothed, drawW, drawH, {
+            layer: layerRef.current,
+            labelMode: layerRef.current === 'skeleton' ? labelModeRef.current : muscleLabelModeRef.current,
+            visibleBounds: { left: offsetX + 18, top: offsetY + 18, right: offsetX + vw - 18, bottom: offsetY + vh - 18 },
+          });
+        } else smootherRef.current.reset();
+        ctx.restore();
+        boneHitTargetsRef.current = [];
+        setDetectedParts(result.count ? ['body'] : []);
+        setTrackingInfo({ target: 'body', status: result.count ? result.partial ? 'Tracking: Partial body' : 'Tracking: Full body' : 'Step back so your body is visible',
+          statusType: result.count ? 'tracking' : 'waiting', acceptedTargets: result.count ? 1 : 0,
+          acceptedLandmarks: result.count > 0, skeletonStatus: result.count ? 'Rendering' : 'Waiting',
+          warnings: [result.partial ? 'Keep shoulders, hips and feet in frame. Hidden regions are not drawn.' : 'Move slowly and face the camera.'],
+        });
+        owner.schedule(trackFrame);
+        return;
+      }
+
       const parts = [];
       const activeTrackIds = [];
       const acceptedHands = [];
       const frameHitTargets = [];
+      const forearmLabelRequests = [];
+      const pairedForearmTracks = new Set();
+      const forearmCandidates = [];
       const validationResults = [];
       const currentTarget = anatomyTargetRef.current;
       let rawDetectorConfidence = 0;
@@ -184,6 +286,12 @@ export default function App() {
       const renderTrackedAnatomy = (landmarks, confidence, uncertain) => {
         renderSkeletonCalled = true;
         if (currentTarget === 'face') {
+          if (layerRef.current === 'skeleton') {
+            return drawFaceSkull(ctx, landmarks, drawW, drawH, {
+              labelMode: labelModeRef.current,
+              visibleBounds,
+            });
+          }
           return drawFaceMuscles(ctx, landmarks, drawW, drawH, {
             labelMode: muscleLabelModeRef.current,
             confidence,
@@ -195,6 +303,7 @@ export default function App() {
           ? drawStylizedHandBones(ctx, landmarks, drawW, drawH, {
             labelMode: labelModeRef.current,
             wristMode: wristModeRef.current,
+            isUncertain: uncertain,
             visibleBounds,
           })
           : drawHandMuscles(ctx, landmarks, drawW, drawH, {
@@ -206,13 +315,41 @@ export default function App() {
           });
       };
 
+      const armPose = currentTarget === 'hand' ? detectBody(trackingFrame, now)?.landmarks?.[0] : null;
+      const usedArmWrists = new Set();
+      const forearmInfo = {trackedForearms:0, estimatedForearms:0, approximateForearms:0,
+        manualForearms:0, pinnedForearms:0, croppedForearms:0, missingForearms:0};
       const detectorResult = currentTarget === 'face'
-        ? detectFaces(video, now)
-        : detectHands(video, now);
+        ? detectFaces(trackingFrame, now)
+        : detectHands(trackingFrame, now);
       const detections = currentTarget === 'face'
         ? detectorResult?.faceLandmarks
         : detectorResult?.landmarks;
       const rawDetectionCount = detections?.length ?? 0;
+      const handObservations = currentTarget === 'hand' ? (detections ?? []).map((landmarks, index) => {
+        const handedness = detectorResult.handednesses?.[index]?.[0];
+        const confidence = handedness?.score ?? handedness?.categoryScore ?? 0.65;
+        const validation = validateHandForRendering(landmarks, confidence, drawW, drawH, visibleBounds);
+        return { landmarks, confidence, handedness: handedness?.categoryName || 'Hand', valid: validation.valid, validation };
+      }) : [];
+      const continuity = currentTarget === 'hand'
+        ? handContinuityRef.current.update(handObservations, now, drawW, drawH, visibleBounds)
+        : { trackIds: [], predictions: [] };
+      const imageFrame = currentTarget === 'hand' ? fingerFrameSamplerRef.current.capture(trackingFrame) : null;
+      if (currentTarget === 'hand') forearmPlacementRef.current.updateFrame(imageFrame, now);
+      const fingerPredictions = currentTarget === 'hand' ? fingerContinuityRef.current.update(
+        handObservations.map((observation, index) => ({
+          ...observation,
+          trackId: continuity.trackIds[index],
+        })).filter(observation => observation.valid),
+        imageFrame, now,
+        { left: offsetX / drawW, top: offsetY / drawH, right: (offsetX + vw) / drawW, bottom: (offsetY + vh) / drawH },
+      ) : [];
+      const fingerHandIds = new Set(fingerPredictions.map(finger => finger.trackId));
+      // A retained close-up digit (including its brief focus-loss prediction)
+      // takes precedence over a second extrapolated whole-hand drawing.
+      continuity.predictions = continuity.predictions.filter(prediction => !fingerHandIds.has(prediction.trackId));
+      const predictedHandCount = continuity.predictions.length + fingerHandIds.size;
       const shouldLogPipeline = now - lastPipelineLogAtRef.current > 1000;
       if (currentTarget === 'face' && rawDetectionCount > 0) {
         detections.slice(0, 1).forEach((landmarks, faceIndex) => {
@@ -262,30 +399,49 @@ export default function App() {
           const confidence = handedness?.score ?? handedness?.categoryScore ?? 0.65;
           rawDetectorConfidence = Math.max(rawDetectorConfidence, confidence);
           const landmarkCount = landmarks?.length ?? 0;
-          const renderValidation = validateHandForRendering(landmarks, confidence, drawW, drawH, visibleBounds);
+          const armBounds = {left: offsetX, top: offsetY, right: offsetX+vw, bottom: offsetY+vh};
+          const renderValidation = handObservations[handIndex].validation;
+          const measuredForearm = forearmTrackerRef.current.resolve(landmarks, armPose, drawW, drawH, armBounds, usedArmWrists, now);
+          const placementTrackId = continuity.trackIds[handIndex] || `hand-${handIndex}`;
+          const forearmMatch = renderValidation.valid ? forearmPlacementRef.current.resolve(landmarks, measuredForearm, {
+            trackId:placementTrackId,w:drawW,h:drawH,bounds:armBounds,now,
+          }) : measuredForearm;
+          if (renderValidation.valid) forearmCandidates.push({trackId:placementTrackId,hand:landmarks,
+            w:drawW,h:drawH,bounds:armBounds,match:forearmMatch,time:now});
+          // A current wrist can support a visible forearm even with cropped
+          // fingers. Do not draw the rejected hand geometry in this case.
+          const forearmOnly = !renderValidation.valid && !!forearmMatch;
+
           const validation = {
             handIndex,
             landmarkCount,
             confidence,
-            valid: renderValidation.valid,
+            valid: renderValidation.valid || forearmOnly,
             reason: renderValidation.reason,
             visibleRatio: renderValidation.visibleRatio,
             renderSkeletonCalled: false,
           };
-          if (!renderValidation.valid) {
+          if (!renderValidation.valid && !forearmOnly) {
             currentRejectedReason = currentRejectedReason || renderValidation.reason;
             hasGraceBlockingRejection = hasGraceBlockingRejection || renderValidation.blocksGrace;
             validationResults.push(validation);
             return;
           }
           validationResults.push(validation);
-          const trackId = `${handedness?.categoryName || 'hand'}-${handIndex}`;
+          const pairedPrediction = forearmOnly
+            ? continuity.predictions.find(prediction => prediction.observationIndex === handIndex) : null;
+          const trackId = continuity.trackIds[handIndex]
+            || pairedPrediction?.trackId
+            || (forearmMatch ? `hand-arm-${forearmMatch.index}` : `${handedness?.categoryName || 'hand'}-${handIndex}`);
           const handednessLabel = handedness?.categoryName || 'Hand';
 
           parts.push(handednessLabel === 'Hand' ? 'hand' : `${handednessLabel} hand`);
           activeTrackIds.push(trackId);
           const smoothedLandmarks = smootherRef.current.smooth(trackId, landmarks, now);
-          lastValidLandmarksRef.current = smoothedLandmarks;
+          // A cropped hand may already have a continuity rendering queued for
+          // this frame. The forearm must use that exact same wrist and palm.
+          const forearmHand = pairedPrediction?.landmarks || smoothedLandmarks;
+          lastValidLandmarksRef.current = forearmOnly ? null : smoothedLandmarks;
           lastValidHandAtRef.current = now;
           lastValidHandMetaRef.current = {
             trackId,
@@ -309,14 +465,83 @@ export default function App() {
           });
 
           validation.renderSkeletonCalled = true;
-          const renderResult = renderTrackedAnatomy(smoothedLandmarks, confidence, renderValidation.uncertain);
+          if (forearmMatch) {
+            const armTrackId = `pose-${forearmMatch.index}-forearm`;
+            activeTrackIds.push(armTrackId);
+            const alignedForearm = alignForearmToHand(forearmMatch, forearmHand, smootherRef.current, armTrackId, now);
+            const {elbow} = alignedForearm;
+            const forearmDrawn = drawForearm(ctx, forearmHand, alignedForearm, drawW, drawH, {
+              layer: layerRef.current, side: muscleSideRef.current,
+              labelMode: layerRef.current === 'skeleton' ? labelModeRef.current : muscleLabelModeRef.current,
+              visibleBounds: armBounds,
+              labelCollector: forearmLabelRequests,
+            });
+            renderSkeletonCalled = renderSkeletonCalled || forearmDrawn;
+            if (forearmDrawn) {
+              if (pairedPrediction) pairedForearmTracks.add(pairedPrediction.trackId);
+              const kind = forearmMatch.source === 'approximate' ? 'approximateForearms'
+                : forearmMatch.source === 'manual-pinned' ? 'pinnedForearms'
+                : forearmMatch.source === 'manual-tracked' ? 'manualForearms'
+                : forearmMatch.held && forearmMatch.ageMs > 180 ? 'estimatedForearms' : 'trackedForearms';
+              forearmInfo[kind] += 1;
+              if (elbow.x * drawW < armBounds.left || elbow.x * drawW > armBounds.right
+                || elbow.y * drawH < armBounds.top || elbow.y * drawH > armBounds.bottom) forearmInfo.croppedForearms += 1;
+              if (forearmMatch.held) acceptedHands[acceptedHands.length - 1].warnings.push('Briefly retaining the last detected elbow. Keep your arm in view.');
+            }
+          } else {
+            forearmInfo.missingForearms += 1;
+            acceptedHands[acceptedHands.length - 1].warnings.push('Show your elbow to align the forearm.');
+          }
+          if (forearmOnly) acceptedHands[acceptedHands.length - 1].warnings = ['Tracking the visible forearm; fingers are outside the view.'];
+          const renderResult = forearmOnly ? null : renderTrackedAnatomy(smoothedLandmarks, confidence, renderValidation.uncertain);
           if (renderResult?.bones) frameHitTargets.push(...renderResult.bones);
+          if (renderResult?.hitTargets) frameHitTargets.push(...renderResult.hitTargets);
 
         });
       }
+      // Draw each missing hand independently, even if another hand or a current
+      // forearm is still visible. These estimates never become measurements.
+      for (const prediction of continuity.predictions) {
+        activeTrackIds.push(prediction.trackId);
+        ctx.save();
+        ctx.globalAlpha *= prediction.alpha;
+        // Coast an existing arm placement with the same predicted wrist for a
+        // brief detector blink. This cannot create or refresh an elbow estimate.
+        if (!pairedForearmTracks.has(prediction.trackId) && prediction.ageMs <= 180) {
+          const heldArm = forearmPlacementRef.current.coast(prediction.landmarks, {
+            trackId:prediction.trackId,w:drawW,h:drawH,bounds:visibleBounds,now,
+          }) || forearmTrackerRef.current.resolve(prediction.landmarks, null, drawW, drawH, visibleBounds, usedArmWrists, now);
+          if (heldArm) {
+            const armTrackId = `pose-${heldArm.index}-forearm`;
+            activeTrackIds.push(armTrackId);
+            const alignedArm = alignForearmToHand(heldArm, prediction.landmarks, smootherRef.current, armTrackId, now);
+            if (drawForearm(ctx, prediction.landmarks, alignedArm, drawW, drawH, {
+              layer:layerRef.current, side:muscleSideRef.current, labelMode:'off', visibleBounds,
+            })) forearmInfo.estimatedForearms += 1;
+          }
+        }
+        const predictedResult=renderTrackedAnatomy(prediction.landmarks, 0, true);
+        if(predictedResult?.hitTargets)frameHitTargets.push(...predictedResult.hitTargets);
+        ctx.restore();
+      }
+      for (const finger of fingerPredictions) {
+        activeTrackIds.push(finger.trackId);
+        ctx.save();
+        ctx.globalAlpha *= finger.alpha;
+        const fingerResult=drawTrackedFingerAnatomy(ctx, finger, drawW, drawH, {
+          layer: layerRef.current,
+          side: muscleSideRef.current,
+          labelMode: layerRef.current === 'skeleton' ? labelModeRef.current : muscleLabelModeRef.current,
+          visibleBounds,
+        });
+        if(fingerResult?.hitTargets)frameHitTargets.push(...fingerResult.hitTargets);
+        ctx.restore();
+        renderSkeletonCalled = true;
+      }
+      const hasPredictedHands = predictedHandCount > 0;
       const timeSinceLastValid = lastValidHandAtRef.current ? now - lastValidHandAtRef.current : null;
-      const faceOverlayOff = currentTarget === 'face' && muscleLabelModeRef.current === 'off';
-      const canRenderGraceFrame = acceptedHands.length === 0
+      const faceOverlayOff = currentTarget === 'face' && layerRef.current === 'muscles' && muscleLabelModeRef.current === 'off';
+      const canRenderGraceFrame = currentTarget === 'face' && acceptedHands.length === 0
         && lastValidLandmarksRef.current
         && timeSinceLastValid !== null
         && timeSinceLastValid < LOST_HAND_GRACE_MS
@@ -337,6 +562,7 @@ export default function App() {
         if (renderResult?.bones) frameHitTargets.push(...renderResult.bones);
         if (renderResult?.hitTargets) frameHitTargets.push(...renderResult.hitTargets);
       }
+      frameHitTargets.push(...drawForearmLabels(ctx, forearmLabelRequests));
       if (IS_DEV && shouldLogPipeline) {
         console.log('tracking pipeline', {
           rawDetectionCount,
@@ -362,11 +588,13 @@ export default function App() {
           muscleSide: muscleSideRef.current,
           timeSinceLastValidMs: timeSinceLastValid,
           graceFrame: canRenderGraceFrame,
+          predictedHands: predictedHandCount,
+          predictedFingers: fingerPredictions.length,
           rejectedReason: currentRejectedReason,
         });
         lastPipelineLogAtRef.current = now;
       }
-      if (acceptedHands.length > 0) {
+      if (acceptedHands.length > 0 || hasPredictedHands) {
         smootherRef.current.prune(activeTrackIds);
       } else if (!lastValidHandAtRef.current || now - lastValidHandAtRef.current >= LOST_HAND_GRACE_MS) {
         smootherRef.current.reset();
@@ -375,7 +603,9 @@ export default function App() {
       }
 
       ctx.restore();
-      boneHitTargetsRef.current = (acceptedHands.length > 0 || canRenderGraceFrame) ? frameHitTargets : [];
+      boneHitTargetsRef.current = (acceptedHands.length > 0 || canRenderGraceFrame || hasPredictedHands) ? frameHitTargets : [];
+      forearmCandidatesRef.current = forearmCandidates;
+      forearmInfo.alignableHands = forearmCandidates.length;
 
       setDetectedParts(parts);
       if (acceptedHands.length > 0) {
@@ -386,14 +616,17 @@ export default function App() {
           : acceptedHands
             .map(hand => hand.handedness === 'Hand' ? 'Hand' : `${hand.handedness} Hand`)
             .join(', ');
-        const uncertain = acceptedHands.some(hand => hand.uncertain);
+        const uncertain = hasPredictedHands || acceptedHands.some(hand => hand.uncertain);
         setTrackingInfo({
+          ...forearmInfo,
           status: uncertain
             ? 'Detection uncertain'
             : currentTarget === 'face'
               ? 'Tracking: Face'
               : acceptedHands.length === 1 ? `Tracking: ${handednessLabels}` : `Tracking: ${acceptedHands.length} hands`,
           statusType: uncertain ? 'uncertain' : 'tracking',
+          predictedHands: predictedHandCount,
+          trackedFingerNames: [...new Set(fingerPredictions.map(finger => finger.name))],
           target: currentTarget,
           confidence: avgConfidence,
           rawConfidence: rawDetectorConfidence,
@@ -410,12 +643,33 @@ export default function App() {
           acceptedTargets: acceptedHands.length,
           acceptedLandmarks: true,
           skeletonStatus: currentTarget === 'face'
-            ? faceOverlayOff ? 'Off' : 'Facial muscles rendering'
+            ? faceOverlayOff ? 'Off' : layerRef.current === 'skeleton' ? 'Skull rendering' : 'Facial muscles rendering'
             : layerRef.current === 'skeleton' ? 'Rendering' : 'Muscle overlay',
           rejectionReason: null,
           lastValidMs: 0,
           rendererActive: !faceOverlayOff && (layerRef.current === 'skeleton' || layerRef.current === 'muscles'),
           canvasSize: `${canvas.width}x${canvas.height}`,
+        });
+      } else if (hasPredictedHands) {
+        setTrackingInfo({
+          ...forearmInfo,
+          status: 'Estimated tracking',
+          statusType: 'estimated',
+          target: 'hand',
+          predictedHands: predictedHandCount,
+          trackedFingerNames: [...new Set(fingerPredictions.map(finger => finger.name))],
+          acceptedHands: 0,
+          acceptedTargets: 0,
+          acceptedLandmarks: false,
+          currentConfidence: 0,
+          rawConfidence: rawDetectorConfidence,
+          rawConfidenceAvailable,
+          rendererActive: true,
+          skeletonStatus: 'Estimated',
+          lastValidMs: Math.max(...continuity.predictions.map(prediction => prediction.ageMs), ...fingerPredictions.map(finger => finger.ageMs)),
+          warnings: [fingerPredictions.length
+            ? 'Following a previously recognized finger using current camera detail.'
+            : 'Following recent hand movement; move back slightly to restore live tracking.'],
         });
       } else if (canRenderGraceFrame) {
         const lastMeta = lastValidHandMetaRef.current;
@@ -425,7 +679,7 @@ export default function App() {
           ? `${lastMeta.handedness} Hand`
           : 'Hand';
         const overlayLabel = currentTarget === 'face'
-          ? 'facial muscle overlay'
+          ? layerRef.current === 'skeleton' ? 'skull overlay' : 'facial muscle overlay'
           : layerRef.current === 'muscles' ? 'muscle overlay' : 'skeleton';
         setTrackingInfo({
           status: 'Detection uncertain',
@@ -511,94 +765,90 @@ export default function App() {
           canvasSize: `${canvas.width}x${canvas.height}`,
         });
       }
-      animFrameRef.current = requestAnimationFrame(trackFrame);
+      owner.schedule(trackFrame);
     }
 
     trackFrame();
   }, []);
 
+  const handleCameraReady = useCallback(() => {
+    setCameraSwitching(false);
+    startTracking();
+  }, [startTracking]);
+
   const handleScan = useCallback(async () => {
+    const lifecycle = lifecycleRef.current;
+    const token = lifecycle.beginScan();
+    clearTrackingDisplay();
+    modelsReadyRef.current = false;
     cameraErrorRef.current = false;
     setState('loading');
     setError(null);
     try {
       await initTrackers(anatomyTargetRef.current);
-      if (cameraErrorRef.current) return;
+      if (!lifecycle.isCurrentScan(token)) return;
+      modelsReadyRef.current = true;
       setState('active');
-      // Preload the alternate local model without making hand startup depend on
-      // the larger face model succeeding.
-      const alternateTarget = anatomyTargetRef.current === 'face' ? 'hand' : 'face';
-      void initTrackers(alternateTarget).catch(err => {
-        if (IS_DEV) console.warn(`${alternateTarget} detector preload failed`, err);
-      });
-      setTimeout(() => {
-        if (!cameraErrorRef.current) startTracking();
-      }, 100);
-    } catch (err) {
-      if (cameraErrorRef.current) return;
-      setError('Failed to load tracking models: ' + err.message);
+      startTracking();
+    } catch {
+      if (!lifecycle.isCurrentScan(token)) return;
+      lifecycle.cancelScan();
+      clearTrackingDisplay();
+      setError('Tracking could not start. Please try again.');
       setState('idle');
     }
-  }, [startTracking]);
+  }, [startTracking, clearTrackingDisplay]);
 
   const handleRescan = useCallback(() => {
-    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-    animFrameRef.current = null;
-    const canvas = canvasRef.current;
-    if (canvas) canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
-    boneHitTargetsRef.current = [];
-    setDetectedParts([]);
-    setHoveredBone(null);
-    setPinnedBone(null);
-    smootherRef.current.reset();
-    lastValidHandAtRef.current = null;
-    lastValidLandmarksRef.current = null;
-    lastValidHandMetaRef.current = null;
+    lifecycleRef.current.cancelScan();
+    clearTrackingDisplay();
+    setCameraSwitching(false);
     setState('idle');
-  }, []);
+  }, [clearTrackingDisplay]);
 
   const handleAnalyze = useCallback(() => {
-    console.log('Analyze clicked');
-    const nextLayer = anatomyTargetRef.current === 'face' ? 'muscles' : 'skeleton';
+    void cameraRef.current?.resumePlayback();
+    const nextLayer = layerRef.current;
     setLayer(nextLayer);
     layerRef.current = nextLayer;
-    if (state === 'active' && !animFrameRef.current) startTracking();
+    if (state === 'active') startTracking();
   }, [startTracking, state]);
 
   const handleLayerChange = useCallback((nextLayer) => {
-    if (anatomyTargetRef.current === 'face' && nextLayer !== 'muscles') return;
+    if (!['skeleton', 'muscles'].includes(nextLayer)) return;
     setLayer(nextLayer);
     layerRef.current = nextLayer;
+    boneHitTargetsRef.current = [];
     setHoveredBone(null);
     setPinnedBone(null);
+    setTooltipPoint(null);
 
     const canvas = canvasRef.current;
     if (canvas) canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
   }, []);
+
 
   const handleAnatomyTargetChange = useCallback((nextTarget) => {
-    if (nextTarget !== 'hand' && nextTarget !== 'face') return;
+    // Full body and Face are coming soon; Hand + forearm is the available target.
+    if (nextTarget !== 'hand' || nextTarget === anatomyTargetRef.current) return;
+    handleRescan();
+    setTrackingInfo(null);
+    setTooltipPoint(null);
     anatomyTargetRef.current = nextTarget;
     setAnatomyTarget(nextTarget);
+    const nextLayer = 'skeleton';
+    layerRef.current = nextLayer;
+    setLayer(nextLayer);
     if (nextTarget === 'face') {
-      layerRef.current = 'muscles';
-      setLayer('muscles');
+      labelModeRef.current = 'clean';
+      setLabelMode('clean');
     }
-    boneHitTargetsRef.current = [];
-    smootherRef.current.reset();
-    lastValidHandAtRef.current = null;
-    lastValidLandmarksRef.current = null;
-    lastValidHandMetaRef.current = null;
-    setDetectedParts([]);
-    setTrackingInfo(null);
-    setHoveredBone(null);
-    setPinnedBone(null);
-    const canvas = canvasRef.current;
-    if (canvas) canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
-    void initTrackers(nextTarget).catch(err => {
-      setError(`Failed to load ${nextTarget} tracking model: ${err.message}`);
-    });
-  }, []);
+    muscleLabelModeRef.current = 'clean';
+    setMuscleLabelMode('clean');
+    // Pause the loop and show loading while the selected model initializes.
+    // Hand startup never downloads the face model in the background.
+    void handleScan();
+  }, [handleRescan, handleScan]);
 
   const getCanvasPoint = useCallback((event) => {
     const canvas = canvasRef.current;
@@ -612,10 +862,10 @@ export default function App() {
   }, []);
 
   const handleCanvasPointerMove = useCallback((event) => {
-    if (pinnedBone) return;
+    if (pinnedBone || aligningElbowRef.current) return;
     const point = getCanvasPoint(event);
     if (!point) return;
-    const hit = findBoneHit(point, boneHitTargetsRef.current);
+    const hit = findAnatomyHit(point, boneHitTargetsRef.current);
     setHoveredBone(hit);
     setTooltipPoint(hit ? { x: event.clientX, y: event.clientY } : null);
   }, [getCanvasPoint, pinnedBone]);
@@ -623,7 +873,23 @@ export default function App() {
   const handleCanvasClick = useCallback((event) => {
     const point = getCanvasPoint(event);
     if (!point) return;
-    const hit = findBoneHit(point, boneHitTargetsRef.current);
+    if (aligningElbowRef.current) {
+      const now=performance.now();
+      const candidates=forearmCandidatesRef.current.filter(candidate=>now-candidate.time<300)
+        .sort((a,b)=>Math.hypot(point.x-a.hand[0].x*a.w,point.y-a.hand[0].y*a.h)
+          -Math.hypot(point.x-b.hand[0].x*b.w,point.y-b.hand[0].y*b.h));
+      for (const candidate of candidates) {
+        if (forearmPlacementRef.current.setElbow(candidate.trackId,{x:point.x/candidate.w,y:point.y/candidate.h},
+          candidate.hand,candidate.w,candidate.h,candidate.bounds,now)) {
+          aligningElbowRef.current=false;
+          setAligningElbow(false);
+          setPinnedBone(null);setHoveredBone(null);setTooltipPoint(null);
+          return;
+        }
+      }
+      return;
+    }
+    const hit = findAnatomyHit(point, boneHitTargetsRef.current);
     setPinnedBone(hit);
     setHoveredBone(null);
     setTooltipPoint(hit ? { x: event.clientX, y: event.clientY } : null);
@@ -637,7 +903,8 @@ export default function App() {
   }, [pinnedBone]);
 
   const isActive = state === 'active';
-  const hasValidTarget = (trackingInfo?.acceptedTargets ?? trackingInfo?.acceptedHands ?? 0) > 0;
+  const hasValidTarget = (trackingInfo?.acceptedTargets ?? trackingInfo?.acceptedHands ?? 0) > 0
+    || (trackingInfo?.predictedHands ?? 0) > 0;
   const filterClass = isActive && hasValidTarget
     ? layer === 'skeleton'
       ? 'filter-skeleton'
@@ -650,7 +917,8 @@ export default function App() {
   return (
     <div style={{ position: 'relative', width: '100%', height: '100dvh', overflow: 'hidden', background: '#000' }}>
       {!cameraError && (
-        <Camera ref={cameraRef} active={state !== 'idle'} onError={handleCameraError} filterClass={filterClass} />
+        <Camera ref={cameraRef} active={state !== 'idle'} onError={handleCameraError} onReleased={handleCameraReleased}
+          facingMode={cameraFacing} onReady={handleCameraReady} filterClass={filterClass} />
       )}
 
       <canvas
@@ -667,9 +935,11 @@ export default function App() {
       {isActive && activeBoneInfo && tooltipPoint && (
         <div
           className={`bone-tooltip ${pinnedBone ? 'pinned' : ''}`}
+          role="tooltip"
+          aria-label={`${activeBoneInfo.name} details`}
           style={{
             left: Math.min(window.innerWidth - 238, Math.max(12, tooltipPoint.x + 14)),
-            top: Math.min(window.innerHeight - 130, Math.max(12, tooltipPoint.y + 14)),
+            top: Math.max(12,Math.min(window.innerHeight - 230, tooltipPoint.y + 14)),
           }}
         >
           <strong>{activeBoneInfo.name}</strong>
@@ -684,9 +954,13 @@ export default function App() {
       )}
 
       {cameraError && <ErrorFallback type="camera" />}
+      {cameraError && <CameraSwitch facingMode={cameraFacing} onSwitch={handleCameraSwitch} idle />}
       {error && <ErrorFallback type="tracker-error" message={error} onRetry={handleScan} />}
 
       <ScanOverlay state={state} />
+
+      {isActive && anatomyTarget === 'hand' && layer === 'skeleton' && wristMode === 'detailed'
+        && hasValidTarget && !(trackingInfo?.trackedFingerNames?.length) && <WristLegend />}
 
       <HUD
         state={state}
@@ -700,6 +974,15 @@ export default function App() {
         muscleSide={muscleSide}
         isMirroredCamera={IS_MIRRORED_CAMERA}
       />
+
+      {isActive && anatomyTarget === 'hand' && (aligningElbow || (trackingInfo?.alignableHands ?? 0) > 0) && (
+        <ForearmControls aligning={aligningElbow}
+          hasManual={(trackingInfo?.manualForearms ?? 0)+(trackingInfo?.pinnedForearms ?? 0)>0}
+          onAlign={() => {aligningElbowRef.current=true;setAligningElbow(true);setPinnedBone(null);setHoveredBone(null);}}
+          onCancel={() => {aligningElbowRef.current=false;setAligningElbow(false);}}
+          onAuto={() => forearmPlacementRef.current.clearManual()}
+        />
+      )}
 
       {!cameraError && (
         <ScanButton
@@ -716,9 +999,12 @@ export default function App() {
           layer={layer}
           onLayerChange={handleLayerChange}
           muscleLabelMode={muscleLabelMode}
-          onMuscleLabelModeChange={setMuscleLabelMode}
+          onMuscleLabelModeChange={next => {setMuscleLabelMode(next);setPinnedBone(null);setHoveredBone(null);boneHitTargetsRef.current=[];}}
           muscleSide={muscleSide}
-          onMuscleSideChange={setMuscleSide}
+          onMuscleSideChange={next => {setMuscleSide(next);setPinnedBone(null);setHoveredBone(null);boneHitTargetsRef.current=[];}}
+          cameraFacing={cameraFacing}
+          onCameraSwitch={handleCameraSwitch}
+          cameraSwitching={cameraSwitching}
         />
       )}
     </div>

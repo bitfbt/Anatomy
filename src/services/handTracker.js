@@ -1,8 +1,10 @@
-import { FaceLandmarker, HandLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
+import { PoseLandmarker, FaceLandmarker, HandLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 import { FACE, HAND, POSE } from './handLandmarks.js';
 
 export { FACE, HAND, POSE };
 
+let poseLandmarker = null;
+let poseInitialization = null;
 let handLandmarker = null;
 let faceLandmarker = null;
 let visionPromise = null;
@@ -10,9 +12,9 @@ let handInitialization = null;
 let faceInitialization = null;
 
 export const HAND_DETECTION_CONFIG = {
-    minHandDetectionConfidence: 0.45,
-    minHandPresenceConfidence: 0.45,
-    minTrackingConfidence: 0.5,
+    minHandDetectionConfidence: 0.35,
+    minHandPresenceConfidence: 0.35,
+    minTrackingConfidence: 0.4,
 };
 
 export const FACE_DETECTION_CONFIG = {
@@ -23,6 +25,7 @@ export const FACE_DETECTION_CONFIG = {
 
 export async function initTrackers(target = 'hand') {
     const initializers = [];
+    if (target === 'body' || target === 'hand' || target === 'all') initializers.push(initPoseTracker());
     if (target === 'hand' || target === 'all') initializers.push(initHandTracker());
     if (target === 'face' || target === 'all') initializers.push(initFaceTracker());
     await Promise.all(initializers);
@@ -32,9 +35,9 @@ function resolveVisionFileset() {
     if (!visionPromise) {
         // Pin the WASM runtime to the installed package version to avoid a
         // browser/runtime mismatch after a fresh install.
-        visionPromise = FilesetResolver.forVisionTasks(
-            'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm'
-        );
+        // Keep the runtime in the app bundle. Camera frames and landmarks stay
+        // on-device; startup does not need a request to a CDN.
+        visionPromise = FilesetResolver.forVisionTasks(`${import.meta.env.BASE_URL}mediapipe/wasm`);
     }
     return visionPromise;
 }
@@ -51,7 +54,7 @@ async function initHandTracker() {
         const delegate = detectorDelegate();
         handLandmarker = await HandLandmarker.createFromOptions(vision, {
             baseOptions: {
-                modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+                modelAssetPath: `${import.meta.env.BASE_URL}models/hand_landmarker.task`,
                 delegate,
             },
             runningMode: 'VIDEO',
@@ -77,7 +80,7 @@ async function initFaceTracker() {
         const delegate = detectorDelegate();
         faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
             baseOptions: {
-                modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+                modelAssetPath: `${import.meta.env.BASE_URL}models/face_landmarker.task`,
                 delegate,
             },
             runningMode: 'VIDEO',
@@ -113,4 +116,27 @@ export function detectFaces(video, timestamp) {
         console.warn('face detector frame failed', err);
         return null;
     }
+}
+
+async function initPoseTracker() {
+    if (poseLandmarker) return;
+    if (poseInitialization) return poseInitialization;
+    poseInitialization = (async () => {
+        const vision = await resolveVisionFileset();
+        poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+            baseOptions: {
+                modelAssetPath: `${import.meta.env.BASE_URL}models/pose_landmarker_lite.task`,
+                delegate: detectorDelegate(),
+            },
+            runningMode: 'VIDEO', numPoses: 1,
+            minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.5,
+            minTrackingConfidence: 0.5, outputSegmentationMasks: false,
+        });
+    })();
+    try { await poseInitialization; } finally { poseInitialization = null; }
+}
+export function detectBody(video, timestamp) {
+    if (!poseLandmarker || !video) return null;
+    try { return poseLandmarker.detectForVideo(video, timestamp); }
+    catch (error) { console.warn('Body tracking frame failed', error); return null; }
 }

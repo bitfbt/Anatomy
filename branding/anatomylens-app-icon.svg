@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#10251e"/>
+      <stop offset="1" stop-color="#050b09"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="43%" r="58%">
+      <stop offset="0" stop-color="#00e88a" stop-opacity=".19"/>
+      <stop offset="1" stop-color="#00e88a" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <rect width="1024" height="1024" fill="url(#glow)"/>
+  <circle cx="512" cy="512" r="372" fill="none" stroke="#c9f5e4" stroke-opacity=".08" stroke-width="3"/>
+  <circle cx="512" cy="512" r="326" fill="none" stroke="#00e88a" stroke-opacity=".10" stroke-width="2"/>
+
+  <g fill="none" stroke="#e8f6ef" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Five clearly separated finger-bone chains -->
+    <g stroke-width="25">
+      <path d="M375 552 L374 443 L382 333"/>
+      <path d="M466 499 L462 382 L464 260"/>
+      <path d="M546 488 L548 361 L550 224"/>
+      <path d="M625 505 L632 393 L644 281"/>
+      <path d="M324 616 L279 544 L293 459"/>
+    </g>
+    <!-- Palm metacarpals -->
+    <g stroke="#bfeedd" stroke-width="23">
+      <path d="M375 552 L411 704"/>
+      <path d="M466 499 L470 700"/>
+      <path d="M546 488 L526 700"/>
+      <path d="M625 505 L581 704"/>
+      <path d="M324 616 L397 729"/>
+    </g>
+    <!-- Wrist and carpal cluster -->
+    <g stroke="#00e88a" stroke-width="24">
+      <path d="M397 729 Q489 766 581 704"/>
+      <path d="M428 754 L405 815"/>
+      <path d="M554 748 L578 812"/>
+    </g>
+    <!-- Joint markers -->
+    <g fill="#071511" stroke="#00e88a" stroke-width="12">
+      <circle cx="375" cy="552" r="17"/><circle cx="382" cy="443" r="16"/><circle cx="382" cy="333" r="16"/>
+      <circle cx="466" cy="499" r="17"/><circle cx="462" cy="382" r="16"/><circle cx="464" cy="260" r="16"/>
+      <circle cx="546" cy="488" r="17"/><circle cx="548" cy="361" r="16"/><circle cx="550" cy="224" r="16"/>
+      <circle cx="625" cy="505" r="17"/><circle cx="632" cy="393" r="16"/><circle cx="644" cy="281" r="16"/>
+      <circle cx="324" cy="616" r="17"/><circle cx="279" cy="544" r="16"/>
+    </g>
+  </g>
+</svg>

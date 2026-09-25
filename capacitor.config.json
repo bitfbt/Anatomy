@@ -1,0 +1,9 @@
+{
+  "appId": "com.bitfbt.anatomy",
+  "appName": "AnatomyLens",
+  "webDir": "dist",
+  "loggingBehavior": "none",
+  "ios": {
+    "webContentsDebuggingEnabled": false
+  }
+}

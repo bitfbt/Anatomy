@@ -1,34 +1,12 @@
-export default function ErrorFallback({ type, message, onRetry, onUpload }) {
+export default function ErrorFallback({ type, message, onRetry }) {
     if (type === 'camera') {
-        const canUpload = typeof onUpload === 'function';
         return (
             <div className="error-container">
                 <div className="error-icon">📷</div>
                 <div className="error-title">Camera Access Denied</div>
                 <div className="error-msg">
-                    {message || (canUpload
-                        ? 'Unable to access your camera. Please grant camera permission in your browser settings, or upload an image manually.'
-                        : 'Unable to access your camera. Please grant camera permission in your browser settings, then retry.')}
+                    {message || 'Unable to access your camera. Please grant camera permission in your browser settings, then retry.'}
                 </div>
-                {canUpload && (
-                    <>
-                        <input
-                            type="file"
-                            accept="image/*"
-                            capture="environment"
-                            onChange={onUpload}
-                            style={{ display: 'none' }}
-                            id="file-upload"
-                        />
-                        <button
-                            className="upload-btn"
-                            onClick={() => document.getElementById('file-upload').click()}
-                            id="upload-button"
-                        >
-                            ↑ Upload Image
-                        </button>
-                    </>
-                )}
             </div>
         );
     }
